@@ -34,7 +34,7 @@ class MSpecOptions
 
   attr_accessor :config, :banner, :width, :options
 
-  def initialize(banner="", width=30, config=nil)
+  def initialize(banner = "", width = 30, config = nil)
     @banner   = banner
     @config   = config
     @width    = width
@@ -94,7 +94,7 @@ class MSpecOptions
     @options.find { |o| o.match? opt }
   end
 
-  # Processes an option. Calles the #on_extra block (or default) for
+  # Processes an option. Calls the #on_extra block (or default) for
   # unrecognized options. For registered options, possibly fetches an
   # argument and invokes the option's block if it is not nil.
   def process(argv, entry, opt, arg)
@@ -123,7 +123,7 @@ class MSpecOptions
 
   # Parses an array of command line entries, calling blocks for
   # registered options.
-  def parse(argv=ARGV)
+  def parse(argv = ARGV)
     argv = Array(argv).dup
 
     while entry = argv.shift
@@ -384,7 +384,7 @@ class MSpecOptions
   def repeat
     on("-R", "--repeat", "NUMBER",
        "Repeatedly run an example NUMBER times") do |o|
-      MSpec.repeat = o.to_i
+      MSpec.repeat = Integer(o)
     end
   end
 
@@ -396,7 +396,7 @@ class MSpecOptions
       end
       def obj.load
         file = MSpec.retrieve :file
-        print "\n#{file.ljust(@width)}"
+        STDERR.print "\n#{file.ljust(@width)}"
       end
       MSpec.register :start, obj
       MSpec.register :load, obj
@@ -407,15 +407,23 @@ class MSpecOptions
       obj = Object.new
       obj.instance_variable_set :@marker, o
       def obj.load
-        print @marker
+        STDERR.print @marker
       end
       MSpec.register :load, obj
     end
   end
 
   def interrupt
-    on("--int-spec", "Control-C interupts the current spec only") do
+    on("--int-spec", "Control-C interrupts the current spec only") do
       config[:abort] = false
+    end
+  end
+
+  def timeout
+    on("--timeout", "TIMEOUT", "Abort if a spec takes longer than TIMEOUT seconds") do |timeout|
+      require 'mspec/runner/actions/timeout'
+      timeout = Float(timeout)
+      TimeoutAction.new(timeout).register
     end
   end
 

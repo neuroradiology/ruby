@@ -33,6 +33,7 @@ MSpec.register :finish, monitor
 at_exit { MSpec.actions :finish }
 
 MSpec.actions :start
+MSpec.setup_env
 
 # Specs
 describe "MSpec expectation method #should" do
@@ -40,7 +41,7 @@ describe "MSpec expectation method #should" do
     :sym.should be_kind_of(Symbol)
   end
 
-  it "causes a failue to be recorded" do
+  it "causes a failure to be recorded" do
     1.should == 2
   end
 

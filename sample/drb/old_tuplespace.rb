@@ -3,8 +3,6 @@
 # Copyright (c) 1999-2000 Masatoshi SEKI
 # You can redistribute it and/or modify it under the same terms as Ruby.
 
-require 'thread'
-
 class TupleSpace
   class Template
     def initialize(list)
@@ -33,7 +31,7 @@ class TupleSpace
   def initialize
     @que = {}
     @waiting = {}
-    @que.taint		# enable tainted comunication
+    @que.taint		# enable tainted communication
     @waiting.taint
     self.taint
   end

@@ -161,6 +161,42 @@ class TestSymbol < Test::Unit::TestCase
     assert_equal(1, first, bug11594)
   end
 
+  class TestToPRocArgWithRefinements; end
+  def _test_to_proc_arg_with_refinements_call(&block)
+    block.call TestToPRocArgWithRefinements.new
+  end
+  using Module.new {
+    refine TestToPRocArgWithRefinements do
+      def hoge
+        :hoge
+      end
+    end
+  }
+  def test_to_proc_arg_with_refinements
+    assert_equal(:hoge, _test_to_proc_arg_with_refinements_call(&:hoge))
+  end
+
+  def self._test_to_proc_arg_with_refinements_call(&block)
+    block.call TestToPRocArgWithRefinements.new
+  end
+  _test_to_proc_arg_with_refinements_call(&:hoge)
+  using Module.new {
+    refine TestToPRocArgWithRefinements do
+      def hoge
+        :hogehoge
+      end
+    end
+  }
+  def test_to_proc_arg_with_refinements_override
+    assert_equal(:hogehoge, _test_to_proc_arg_with_refinements_call(&:hoge))
+  end
+
+  def test_to_proc_arg_with_refinements_undefined
+    assert_raise(NoMethodError) do
+      _test_to_proc_arg_with_refinements_call(&:foo)
+    end
+  end
+
   private def return_from_proc
     Proc.new { return 1 }.tap(&:call)
   end
@@ -497,14 +533,6 @@ class TestSymbol < Test::Unit::TestCase
     end;
   end
 
-  def test_not_freeze
-    bug11721 = '[ruby-core:71611] [Bug #11721]'
-    str = "\u{1f363}".taint
-    assert_not_predicate(str, :frozen?)
-    assert_equal str, str.to_sym.to_s
-    assert_not_predicate(str, :frozen?, bug11721)
-  end
-
   def test_hash_nondeterministic
     ruby = EnvUtil.rubybin
     assert_not_equal :foo.hash, `#{ruby} -e 'puts :foo.hash'`.to_i,
@@ -513,5 +541,41 @@ class TestSymbol < Test::Unit::TestCase
     sym = "dynsym_#{Random.rand(10000)}_#{Time.now}"
     assert_not_equal sym.to_sym.hash,
                      `#{ruby} -e 'puts #{sym.inspect}.to_sym.hash'`.to_i
+  end
+
+  def test_eq_can_be_redefined
+    assert_in_out_err([], <<-RUBY, ["foo"], [])
+      class Symbol
+        remove_method :==
+        def ==(obj)
+          "foo"
+        end
+      end
+
+      puts :a == :a
+    RUBY
+  end
+
+  def test_start_with?
+    assert_equal(true, :hello.start_with?("hel"))
+    assert_equal(false, :hello.start_with?("el"))
+    assert_equal(true, :hello.start_with?("el", "he"))
+
+    bug5536 = '[ruby-core:40623]'
+    assert_raise(TypeError, bug5536) {:str.start_with? :not_convertible_to_string}
+
+    assert_equal(true, :hello.start_with?(/hel/))
+    assert_equal("hel", $&)
+    assert_equal(false, :hello.start_with?(/el/))
+    assert_nil($&)
+  end
+
+  def test_end_with?
+    assert_equal(true, :hello.end_with?("llo"))
+    assert_equal(false, :hello.end_with?("ll"))
+    assert_equal(true, :hello.end_with?("el", "lo"))
+
+    bug5536 = '[ruby-core:40623]'
+    assert_raise(TypeError, bug5536) {:str.end_with? :not_convertible_to_string}
   end
 end

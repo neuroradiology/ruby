@@ -1,6 +1,8 @@
 # frozen_string_literal: false
 require_relative 'utils'
 
+if defined?(OpenSSL)
+
 class OpenSSL::TestConfig < OpenSSL::TestCase
   def setup
     super
@@ -59,14 +61,14 @@ foo\\bar::foo\\bar = baz
 [default1  default2]\t\t  # space is allowed in section name
           fo =b  ar       # space allowed in value
 [emptysection]
- [doller ]
+ [dollar ]
 foo=bar
 bar = $(foo)
 baz = 123$(default::bar)456${foo}798
 qux = ${baz}
 quxx = $qux.$qux
 __EOC__
-    assert_equal(['default', 'default1  default2', 'doller', 'emptysection', 'foo', 'foo\\bar'], c.sections.sort)
+    assert_equal(['default', 'default1  default2', 'dollar', 'emptysection', 'foo', 'foo\\bar'], c.sections.sort)
     assert_equal(['', 'a', 'bar', 'baz', 'd', 'dq', 'dq2', 'esc', 'foo\\bar', 'sq'], c['default'].keys.sort)
     assert_equal('c', c['default'][''])
     assert_equal('', c['default']['a'])
@@ -82,12 +84,12 @@ __EOC__
     assert_equal('baz', c['foo\\bar']['foo\\bar'])
     assert_equal('b  ar', c['default1  default2']['fo'])
 
-    # dolloer
-    assert_equal('bar', c['doller']['foo'])
-    assert_equal('bar', c['doller']['bar'])
-    assert_equal('123baz456bar798', c['doller']['baz'])
-    assert_equal('123baz456bar798', c['doller']['qux'])
-    assert_equal('123baz456bar798.123baz456bar798', c['doller']['quxx'])
+    # dollar
+    assert_equal('bar', c['dollar']['foo'])
+    assert_equal('bar', c['dollar']['bar'])
+    assert_equal('123baz456bar798', c['dollar']['baz'])
+    assert_equal('123baz456bar798', c['dollar']['qux'])
+    assert_equal('123baz456bar798.123baz456bar798', c['dollar']['quxx'])
 
     excn = assert_raise(OpenSSL::ConfigError) do
       OpenSSL::Config.parse("foo = $bar")
@@ -171,7 +173,7 @@ __EOC__
 
   def test_value
     # suppress deprecation warnings
-    OpenSSL::TestUtils.silent do
+    EnvUtil.suppress_warning do
       assert_equal('CA_default', @it.value('ca', 'default_ca'))
       assert_equal(nil, @it.value('ca', 'no such key'))
       assert_equal(nil, @it.value('no such section', 'no such key'))
@@ -184,7 +186,7 @@ __EOC__
   end
 
   def test_value_ENV
-    OpenSSL::TestUtils.silent do
+    EnvUtil.suppress_warning do
       key = ENV.keys.first
       assert_not_nil(key) # make sure we have at least one ENV var.
       assert_equal(ENV[key], @it.value('ENV', key))
@@ -199,7 +201,7 @@ __EOC__
   end
 
   def test_section
-    OpenSSL::TestUtils.silent do
+    EnvUtil.suppress_warning do
       assert_equal({'HOME' => '.'}, @it.section('default'))
       assert_equal({'dir' => './demoCA', 'certs' => './certs'}, @it.section('CA_default'))
       assert_equal({}, @it.section('no_such_section'))
@@ -297,4 +299,6 @@ __EOC__
     @it['newsection'] = {'a' => 'b'}
     assert_not_equal(@it.sections.sort, c.sections.sort)
   end
-end if defined?(OpenSSL::TestUtils)
+end
+
+end
