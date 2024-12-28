@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 require_relative "utils"
 
 if defined?(OpenSSL)
@@ -17,37 +17,32 @@ class OpenSSL::TestX509Request < OpenSSL::TestCase
     req = OpenSSL::X509::Request.new
     req.version = ver
     req.subject = dn
-    req.public_key = key.public_key
+    req.public_key = key
     req.sign(key, digest)
     req
   end
 
   def test_public_key
-    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
-    assert_equal(@rsa1024.public_key.to_der, req.public_key.to_der)
+    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
+    assert_equal(@rsa1024.public_to_der, req.public_key.public_to_der)
     req = OpenSSL::X509::Request.new(req.to_der)
-    assert_equal(@rsa1024.public_key.to_der, req.public_key.to_der)
+    assert_equal(@rsa1024.public_to_der, req.public_key.public_to_der)
 
-    req = issue_csr(0, @dn, @dsa512, OpenSSL::Digest::SHA1.new)
-    assert_equal(@dsa512.public_key.to_der, req.public_key.to_der)
+    req = issue_csr(0, @dn, @dsa512, OpenSSL::Digest.new('SHA256'))
+    assert_equal(@dsa512.public_to_der, req.public_key.public_to_der)
     req = OpenSSL::X509::Request.new(req.to_der)
-    assert_equal(@dsa512.public_key.to_der, req.public_key.to_der)
+    assert_equal(@dsa512.public_to_der, req.public_key.public_to_der)
   end
 
   def test_version
-    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
     assert_equal(0, req.version)
     req = OpenSSL::X509::Request.new(req.to_der)
     assert_equal(0, req.version)
-
-    req = issue_csr(1, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
-    assert_equal(1, req.version)
-    req = OpenSSL::X509::Request.new(req.to_der)
-    assert_equal(1, req.version)
   end
 
   def test_subject
-    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
     assert_equal(@dn.to_der, req.subject.to_der)
     req = OpenSSL::X509::Request.new(req.to_der)
     assert_equal(@dn.to_der, req.subject.to_der)
@@ -78,9 +73,9 @@ class OpenSSL::TestX509Request < OpenSSL::TestCase
       OpenSSL::X509::Attribute.new("msExtReq", attrval),
     ]
 
-    req0 = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req0 = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
     attrs.each{|attr| req0.add_attribute(attr) }
-    req1 = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req1 = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
     req1.attributes = attrs
     assert_equal(req0.to_der, req1.to_der)
 
@@ -101,17 +96,18 @@ class OpenSSL::TestX509Request < OpenSSL::TestCase
   end
 
   def test_sign_and_verify_rsa_sha1
-    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA1'))
     assert_equal(true,  req.verify(@rsa1024))
     assert_equal(false, req.verify(@rsa2048))
     assert_equal(false, request_error_returns_false { req.verify(@dsa256) })
     assert_equal(false, request_error_returns_false { req.verify(@dsa512) })
-    req.version = 1
+    req.subject = OpenSSL::X509::Name.parse("/C=JP/CN=FooBarFooBar")
     assert_equal(false, req.verify(@rsa1024))
+  rescue OpenSSL::X509::RequestError # RHEL 9 disables SHA1
   end
 
   def test_sign_and_verify_rsa_md5
-    req = issue_csr(0, @dn, @rsa2048, OpenSSL::Digest::MD5.new)
+    req = issue_csr(0, @dn, @rsa2048, OpenSSL::Digest.new('MD5'))
     assert_equal(false, req.verify(@rsa1024))
     assert_equal(true,  req.verify(@rsa2048))
     assert_equal(false, request_error_returns_false { req.verify(@dsa256) })
@@ -122,7 +118,7 @@ class OpenSSL::TestX509Request < OpenSSL::TestCase
   end
 
   def test_sign_and_verify_dsa
-    req = issue_csr(0, @dn, @dsa512, OpenSSL::Digest::SHA1.new)
+    req = issue_csr(0, @dn, @dsa512, OpenSSL::Digest.new('SHA256'))
     assert_equal(false, request_error_returns_false { req.verify(@rsa1024) })
     assert_equal(false, request_error_returns_false { req.verify(@rsa2048) })
     assert_equal(false, req.verify(@dsa256))
@@ -133,22 +129,44 @@ class OpenSSL::TestX509Request < OpenSSL::TestCase
 
   def test_sign_and_verify_dsa_md5
     assert_raise(OpenSSL::X509::RequestError){
-      issue_csr(0, @dn, @dsa512, OpenSSL::Digest::MD5.new) }
+      issue_csr(0, @dn, @dsa512, OpenSSL::Digest.new('MD5')) }
+  end
+
+  def test_sign_and_verify_ed25519
+    # Ed25519 is not FIPS-approved.
+    omit_on_fips
+    # See ASN1_item_sign_ctx in ChangeLog for 3.8.1: https://github.com/libressl/portable/blob/master/ChangeLog
+    omit "Ed25519 not supported" unless openssl?(1, 1, 1) || libressl?(3, 8, 1)
+    ed25519 = OpenSSL::PKey::generate_key("ED25519")
+    req = issue_csr(0, @dn, ed25519, nil)
+    assert_equal(false, request_error_returns_false { req.verify(@rsa1024) })
+    assert_equal(false, request_error_returns_false { req.verify(@rsa2048) })
+    assert_equal(false, req.verify(OpenSSL::PKey::generate_key("ED25519")))
+    assert_equal(true, req.verify(ed25519))
+    req.public_key = @rsa1024.public_key
+    assert_equal(false, req.verify(ed25519))
   end
 
   def test_dup
-    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest::SHA1.new)
+    req = issue_csr(0, @dn, @rsa1024, OpenSSL::Digest.new('SHA256'))
     assert_equal(req.to_der, req.dup.to_der)
   end
 
   def test_eq
-    req1 = issue_csr(0, @dn, @rsa1024, "sha1")
-    req2 = issue_csr(0, @dn, @rsa1024, "sha1")
-    req3 = issue_csr(0, @dn, @rsa1024, "sha256")
+    req1 = issue_csr(0, @dn, @rsa1024, "sha256")
+    req2 = issue_csr(0, @dn, @rsa1024, "sha256")
+    req3 = issue_csr(0, @dn, @rsa1024, "sha512")
 
     assert_equal false, req1 == 12345
     assert_equal true, req1 == req2
     assert_equal false, req1 == req3
+  end
+
+  def test_marshal
+    req = issue_csr(0, @dn, @rsa1024, "sha256")
+    deserialized = Marshal.load(Marshal.dump(req))
+
+    assert_equal req.to_der, deserialized.to_der
   end
 
   private

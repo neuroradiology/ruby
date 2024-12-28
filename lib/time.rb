@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+# shareable_constant_value: literal
 
 require 'date'
 
@@ -23,7 +24,11 @@ require 'date'
 
 # :startdoc:
 
+# #
 class Time
+
+  VERSION = "0.4.1"             # :nodoc:
+
   class << Time
 
     #
@@ -92,6 +97,7 @@ class Time
       off
     end
 
+    # :stopdoc:
     def zone_utc?(zone)
       # * +0000
       #   In RFC 2822, +0000 indicate a time zone at Universal Time.
@@ -267,10 +273,16 @@ class Time
       end
     end
     private :make_time
+    # :startdoc:
 
     #
     # Takes a string representation of a Time and attempts to parse it
     # using a heuristic.
+    #
+    # This method **does not** function as a validator.  If the input
+    # string does not match valid formats strictly, you may get a
+    # cryptic result.  Should consider to use Time.strptime instead
+    # of this method as possible.
     #
     #     require 'time'
     #
@@ -380,6 +392,8 @@ class Time
     # heuristic to detect the format of the input string, you provide
     # a second argument that describes the format of the string.
     #
+    # Raises ArgumentError if the date or format is invalid.
+    #
     # If a block is given, the year described in +date+ is converted by the
     # block.  For example:
     #
@@ -394,7 +408,7 @@ class Time
     # %c :: The preferred local date and time representation
     # %C :: Century (20 in 2009)
     # %d :: Day of the month (01..31)
-    # %D :: Date (%m/%d/%y)
+    # %D :: \Date (%m/%d/%y)
     # %e :: Day of the month, blank-padded ( 1..31)
     # %F :: Equivalent to %Y-%m-%d (the ISO 8601 date format)
     # %g :: The last two digits of the commercial year
@@ -431,8 +445,8 @@ class Time
     # %X :: Preferred representation for the time alone, no date
     # %y :: Year without a century (00..99)
     # %Y :: Year which may include century, if provided
-    # %z :: Time zone as  hour offset from UTC (e.g. +0900)
-    # %Z :: Time zone name
+    # %z :: \Time zone as hour offset from UTC (e.g. +0900)
+    # %Z :: \Time zone name
     # %% :: Literal "%" character
     # %+ :: date(1) (%a %b %e %H:%M:%S %Z %Y)
     #
@@ -444,7 +458,7 @@ class Time
     #
     def strptime(date, format, now=self.now)
       d = Date._strptime(date, format)
-      raise ArgumentError, "invalid date or strptime format - `#{date}' `#{format}'" unless d
+      raise ArgumentError, "invalid date or strptime format - '#{date}' '#{format}'" unless d
       if seconds = d[:seconds]
         if sec_fraction = d[:sec_fraction]
           usec = sec_fraction * 1000000
@@ -501,8 +515,8 @@ class Time
           (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+
           (\d{2,})\s+
           (\d{2})\s*
-          :\s*(\d{2})\s*
-          (?::\s*(\d{2}))?\s+
+          :\s*(\d{2})
+          (?:\s*:\s*(\d\d))?\s+
           ([+-]\d{4}|
            UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|[A-IK-Z])/ix =~ date
         # Since RFC 2822 permit comments, the regexp has no right anchor.
@@ -590,12 +604,12 @@ class Time
     end
 
     #
-    # Parses +date+ as a dateTime defined by the XML Schema and converts it to
+    # Parses +time+ as a dateTime defined by the XML Schema and converts it to
     # a Time object.  The format is a restricted version of the format defined
     # by ISO 8601.
     #
-    # ArgumentError is raised if +date+ is not compliant with the format or if
-    # the Time class cannot represent specified date.
+    # ArgumentError is raised if +time+ is not compliant with the format or if
+    # the Time class cannot represent the specified time.
     #
     # See #xmlschema for more information on this format.
     #
@@ -606,14 +620,14 @@ class Time
     #
     # You must require 'time' to use this method.
     #
-    def xmlschema(date)
+    def xmlschema(time)
       if /\A\s*
           (-?\d+)-(\d\d)-(\d\d)
           T
           (\d\d):(\d\d):(\d\d)
           (\.\d+)?
           (Z|[+-]\d\d(?::?\d\d)?)?
-          \s*\z/ix =~ date
+          \s*\z/ix =~ time
         year = $1.to_i
         mon = $2.to_i
         day = $3.to_i
@@ -636,7 +650,7 @@ class Time
           self.local(year, mon, day, hour, min, sec, usec)
         end
       else
-        raise ArgumentError.new("invalid date: #{date.inspect}")
+        raise ArgumentError.new("invalid xmlschema format: #{time.inspect}")
       end
     end
     alias iso8601 xmlschema
@@ -659,29 +673,9 @@ class Time
   # You must require 'time' to use this method.
   #
   def rfc2822
-    sprintf('%s, %02d %s %0*d %02d:%02d:%02d ',
-      RFC2822_DAY_NAME[wday],
-      day, RFC2822_MONTH_NAME[mon-1], year < 0 ? 5 : 4, year,
-      hour, min, sec) <<
-    if utc?
-      '-0000'
-    else
-      off = utc_offset
-      sign = off < 0 ? '-' : '+'
-      sprintf('%s%02d%02d', sign, *(off.abs / 60).divmod(60))
-    end
+    strftime('%a, %d %b %Y %T ') << (utc? ? '-0000' : strftime('%z'))
   end
   alias rfc822 rfc2822
-
-
-  RFC2822_DAY_NAME = [ # :nodoc:
-    'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
-  ]
-
-  RFC2822_MONTH_NAME = [ # :nodoc:
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ]
 
   #
   # Returns a string which represents the time as RFC 1123 date of HTTP-date
@@ -699,42 +693,39 @@ class Time
   # You must require 'time' to use this method.
   #
   def httpdate
-    t = dup.utc
-    sprintf('%s, %02d %s %0*d %02d:%02d:%02d GMT',
-      RFC2822_DAY_NAME[t.wday],
-      t.day, RFC2822_MONTH_NAME[t.mon-1], t.year < 0 ? 5 : 4, t.year,
-      t.hour, t.min, t.sec)
+    getutc.strftime('%a, %d %b %Y %T GMT')
   end
 
-  #
-  # Returns a string which represents the time as a dateTime defined by XML
-  # Schema:
-  #
-  #   CCYY-MM-DDThh:mm:ssTZD
-  #   CCYY-MM-DDThh:mm:ss.sssTZD
-  #
-  # where TZD is Z or [+-]hh:mm.
-  #
-  # If self is a UTC time, Z is used as TZD.  [+-]hh:mm is used otherwise.
-  #
-  # +fractional_digits+ specifies a number of digits to use for fractional
-  # seconds.  Its default value is 0.
-  #
-  #     require 'time'
-  #
-  #     t = Time.now
-  #     t.iso8601  # => "2011-10-05T22:26:12-04:00"
-  #
-  # You must require 'time' to use this method.
-  #
-  def xmlschema(fraction_digits=0)
-    fraction_digits = fraction_digits.to_i
-    s = strftime("%FT%T")
-    if fraction_digits > 0
-      s << strftime(".%#{fraction_digits}N")
+  unless method_defined?(:xmlschema)
+    #
+    # Returns a string which represents the time as a dateTime defined by XML
+    # Schema:
+    #
+    #   CCYY-MM-DDThh:mm:ssTZD
+    #   CCYY-MM-DDThh:mm:ss.sssTZD
+    #
+    # where TZD is Z or [+-]hh:mm.
+    #
+    # If self is a UTC time, Z is used as TZD.  [+-]hh:mm is used otherwise.
+    #
+    # +fraction_digits+ specifies a number of digits to use for fractional
+    # seconds.  Its default value is 0.
+    #
+    #     require 'time'
+    #
+    #     t = Time.now
+    #     t.iso8601  # => "2011-10-05T22:26:12-04:00"
+    #
+    # You must require 'time' to use this method.
+    #
+    def xmlschema(fraction_digits=0)
+      fraction_digits = fraction_digits.to_i
+      s = strftime("%FT%T")
+      if fraction_digits > 0
+        s << strftime(".%#{fraction_digits}N")
+      end
+      s << (utc? ? 'Z' : strftime("%:z"))
     end
-    s << (utc? ? 'Z' : strftime("%:z"))
   end
-  alias iso8601 xmlschema
+  alias iso8601 xmlschema unless method_defined?(:iso8601)
 end
-

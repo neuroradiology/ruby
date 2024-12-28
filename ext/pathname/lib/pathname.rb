@@ -14,6 +14,8 @@ require 'pathname.so'
 
 class Pathname
 
+  VERSION = "0.4.0"
+
   # :stopdoc:
 
   # to_path is implemented so Pathname objects are usable with File.open, etc.
@@ -34,6 +36,13 @@ class Pathname
     SEPARATOR_LIST = "#{Regexp.quote File::SEPARATOR}"
     SEPARATOR_PAT = /#{Regexp.quote File::SEPARATOR}/
   end
+
+  if File.dirname('A:') == 'A:.' # DOSish drive letter
+    ABSOLUTE_PATH = /\A(?:[A-Za-z]:|#{SEPARATOR_PAT})/o
+  else
+    ABSOLUTE_PATH = /\A#{SEPARATOR_PAT}/o
+  end
+  private_constant :ABSOLUTE_PATH
 
   # :startdoc:
 
@@ -222,7 +231,7 @@ class Pathname
   #   p.absolute?
   #       #=> false
   def absolute?
-    !relative?
+    ABSOLUTE_PATH.match? @path
   end
 
   # The opposite of Pathname#absolute?
@@ -237,11 +246,7 @@ class Pathname
   #   p.relative?
   #       #=> true
   def relative?
-    path = @path
-    while r = chop_basename(path)
-      path, = r
-    end
-    path == ''
+    !absolute?
   end
 
   #
@@ -335,6 +340,8 @@ class Pathname
 
   #
   # Appends a pathname fragment to +self+ to produce a new Pathname object.
+  # Since +other+ is considered as a path relative to +self+, if +other+ is
+  # an absolute path, the new Pathname object is created from just +other+.
   #
   #   p1 = Pathname.new("/usr")      # Pathname:/usr
   #   p2 = p1 + "bin/ruby"           # Pathname:/usr/bin/ruby
@@ -396,6 +403,8 @@ class Pathname
 
   #
   # Joins the given pathnames onto +self+ to create a new Pathname object.
+  # This is effectively the same as using Pathname#+ to append +self+ and
+  # all arguments sequentially.
   #
   #   path0 = Pathname.new("/usr")                # Pathname:/usr
   #   path0 = path0.join("bin/ruby")              # Pathname:/usr/bin/ruby
@@ -502,6 +511,9 @@ class Pathname
   #
   # ArgumentError is raised when it cannot find a relative path.
   #
+  # Note that this method does not handle situations where the case sensitivity
+  # of the filesystem in use differs from the operating system default.
+  #
   def relative_path_from(base_directory)
     base_directory = Pathname.new(base_directory) unless base_directory.is_a? Pathname
     dest_directory = self.cleanpath.to_s
@@ -560,7 +572,7 @@ class Pathname    # * Find *
     return to_enum(__method__, ignore_error: ignore_error) unless block_given?
     require 'find'
     if @path == '.'
-      Find.find(@path, ignore_error: ignore_error) {|f| yield self.class.new(f.sub(%r{\A\./}, '')) }
+      Find.find(@path, ignore_error: ignore_error) {|f| yield self.class.new(f.delete_prefix('./')) }
     else
       Find.find(@path, ignore_error: ignore_error) {|f| yield self.class.new(f) }
     end
@@ -573,21 +585,37 @@ class Pathname    # * FileUtils *
   # exist.
   #
   # See FileUtils.mkpath and FileUtils.mkdir_p
-  def mkpath
+  def mkpath(mode: nil)
     require 'fileutils'
-    FileUtils.mkpath(@path)
-    nil
+    FileUtils.mkpath(@path, mode: mode)
+    self
   end
 
   # Recursively deletes a directory, including all directories beneath it.
   #
-  # See FileUtils.rm_r
-  def rmtree
+  # See FileUtils.rm_rf
+  def rmtree(noop: nil, verbose: nil, secure: nil)
     # The name "rmtree" is borrowed from File::Path of Perl.
     # File::Path provides "mkpath" and "rmtree".
     require 'fileutils'
-    FileUtils.rm_r(@path)
-    nil
+    FileUtils.rm_rf(@path, noop: noop, verbose: verbose, secure: secure)
+    self
   end
 end
 
+class Pathname    # * tmpdir *
+  # Creates a tmp directory and wraps the returned path in a Pathname object.
+  #
+  # See Dir.mktmpdir
+  def self.mktmpdir
+    require 'tmpdir' unless defined?(Dir.mktmpdir)
+    if block_given?
+      Dir.mktmpdir do |dir|
+        dir = self.new(dir)
+        yield dir
+      end
+    else
+      self.new(Dir.mktmpdir)
+    end
+  end
+end

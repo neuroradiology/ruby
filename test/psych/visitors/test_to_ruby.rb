@@ -20,12 +20,13 @@ module Psych
       end
 
       def test_tz_00_00_loads_without_error
-        assert Psych.load('1900-01-01T00:00:00+00:00')
+        assert Psych.unsafe_load('1900-01-01T00:00:00+00:00')
       end
 
       def test_legacy_struct
+        Struct.send(:remove_const, :AWESOME) if Struct.const_defined?(:AWESOME)
         foo = Struct.new('AWESOME', :bar)
-        assert_equal foo.new('baz'), Psych.load(<<-eoyml)
+        assert_equal foo.new('baz'), Psych.unsafe_load(<<-eoyml)
 !ruby/struct:AWESOME
   bar: baz
         eoyml
@@ -318,7 +319,7 @@ description:
 
         list = seq.to_ruby
         assert_equal %w{ foo foo }, list
-        assert_equal list[0].object_id, list[1].object_id
+        assert_same list[0], list[1]
       end
 
       def test_mapping_with_str_tag

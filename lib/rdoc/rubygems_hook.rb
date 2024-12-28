@@ -1,15 +1,21 @@
 # frozen_string_literal: true
 require 'rubygems/user_interaction'
 require 'fileutils'
-require 'rdoc'
+require_relative '../rdoc'
 
-##
-# Gem::RDoc provides methods to generate RDoc and ri data for installed gems
-# upon gem installation.
+# We define the following two similar name classes in this file:
 #
-# This file is automatically required by RubyGems 1.9 and newer.
+# - RDoc::RubyGemsHook
+# - RDoc::RubygemsHook
+#
+# RDoc::RubyGemsHook is the main class that has real logic.
+#
+# RDoc::RubygemsHook is a class that is only for
+# compatibility. RDoc::RubygemsHook is used by RubyGems directly. We
+# can remove this when all maintained RubyGems remove
+# `rubygems/rdoc.rb`.
 
-class RDoc::RubygemsHook
+class RDoc::RubyGemsHook
 
   include Gem::UserInteraction
   extend  Gem::UserInteraction
@@ -45,7 +51,7 @@ class RDoc::RubygemsHook
   # Post installs hook that generates documentation for each specification in
   # +specs+
 
-  def self.generation_hook installer, specs
+  def self.generate installer, specs
     start = Time.now
     types = installer.document
 
@@ -64,13 +70,17 @@ class RDoc::RubygemsHook
     say "Done installing documentation for #{names} after #{duration} seconds"
   end
 
+  def self.remove uninstaller
+    new(uninstaller.spec).remove
+  end
+
   ##
   # Loads the RDoc generator
 
   def self.load_rdoc
     return if @rdoc_version
 
-    require 'rdoc/rdoc'
+    require_relative 'rdoc'
 
     @rdoc_version = Gem::Version.new ::RDoc::VERSION
   end
@@ -120,7 +130,9 @@ class RDoc::RubygemsHook
     options.exclude ||= [] # TODO maybe move to RDoc::Options#finish
     options.setup_generator generator
     options.op_dir = destination
-    options.finish
+    Dir.chdir @spec.full_gem_path do
+      options.finish
+    end
 
     generator = options.generator.new @rdoc.store, options
 
@@ -158,7 +170,7 @@ class RDoc::RubygemsHook
 
     case config_args = Gem.configuration[:rdoc]
     when String then
-      args = args.concat config_args.split
+      args = args.concat config_args.split(' ')
     when Array then
       args = args.concat config_args
     end
@@ -243,4 +255,60 @@ class RDoc::RubygemsHook
     FileUtils.mkdir_p @doc_dir unless File.exist? @doc_dir
   end
 
+end
+
+# This class is referenced by RubyGems to create documents.
+# All implementations are moved to the above RubyGemsHook.
+#
+# This class does nothing when this RDoc is installed as a normal gem
+# or a bundled gem.
+#
+# This class does generate/remove documents for compatibility when
+# this RDoc is installed as a default gem.
+#
+# We can remove this when all maintained RubyGems remove
+# `rubygems/rdoc.rb`.
+module RDoc
+  class RubygemsHook
+
+    attr_accessor :generate_rdoc, :generate_ri, :force
+
+    def self.default_gem?
+      !File.exist?(File.join(__dir__, "..", "rubygems_plugin.rb"))
+    end
+
+    def initialize(spec, generate_rdoc = false, generate_ri = true)
+      @spec = spec
+      @generate_rdoc = generate_rdoc
+      @generate_ri   = generate_ri
+      @force = false
+    end
+
+    def generate
+      # Do nothing if this is NOT a default gem.
+      return unless self.class.default_gem?
+
+      # Generate document for compatibility if this is a default gem.
+      hook = RubyGemsHook.new(@spec, @generate_rdoc, @generate_ri)
+      hook.force = @force
+      hook.generate
+    end
+
+    def remove
+      # Do nothing if this is NOT a default gem.
+      return unless self.class.default_gem?
+
+      # Remove generated document for compatibility if this is a
+      # default gem.
+      RubyGemsHook.new(@spec).remove
+    end
+
+    def self.generation_hook installer, specs
+      # Do nothing if this is NOT a default gem.
+      return unless default_gem?
+
+      # Generate document for compatibility if this is a default gem.
+      RubyGemsHook.generate(installer, specs)
+    end
+  end
 end

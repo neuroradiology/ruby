@@ -1,12 +1,10 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 require_relative "utils"
 
-if defined?(OpenSSL)
+if defined?(OpenSSL::SSL)
 
 class OpenSSL::TestSSLSession < OpenSSL::SSLTestCase
   def test_session
-    pend "TLS 1.2 is not supported" unless tls12_supported?
-
     ctx_proc = proc { |ctx| ctx.ssl_version = :TLSv1_2 }
     start_server(ctx_proc: ctx_proc) do |port|
       server_connect_with_session(port, nil, nil) { |ssl|
@@ -24,7 +22,7 @@ class OpenSSL::TestSSLSession < OpenSSL::SSLTestCase
         assert_match(/\A-----BEGIN SSL SESSION PARAMETERS-----/, pem)
         assert_match(/-----END SSL SESSION PARAMETERS-----\Z/, pem)
         pem.gsub!(/-----(BEGIN|END) SSL SESSION PARAMETERS-----/, '').gsub!(/[\r\n]+/m, '')
-        assert_equal(session.to_der, pem.unpack('m*')[0])
+        assert_equal(session.to_der, pem.unpack1('m'))
         assert_not_nil(session.to_text)
       }
     end
@@ -122,6 +120,7 @@ __EOS__
       ctx.options &= ~OpenSSL::SSL::OP_NO_TICKET
       # Disable server-side session cache which is enabled by default
       ctx.session_cache_mode = OpenSSL::SSL::SSLContext::SESSION_CACHE_OFF
+      ctx.max_version = OpenSSL::SSL::TLS1_2_VERSION if libressl?(3, 2, 0)
     }
     start_server(ctx_proc: ctx_proc) do |port|
       sess1 = server_connect_with_session(port, nil, nil) { |ssl|
@@ -143,8 +142,6 @@ __EOS__
   end
 
   def test_server_session_cache
-    pend "TLS 1.2 is not supported" unless tls12_supported?
-
     ctx_proc = Proc.new do |ctx|
       ctx.ssl_version = :TLSv1_2
       ctx.options |= OpenSSL::SSL::OP_NO_TICKET
@@ -222,13 +219,11 @@ __EOS__
   # deadlock.
   TEST_SESSION_REMOVE_CB = ENV["OSSL_TEST_ALL"] == "1"
 
-  def test_ctx_client_session_cb
-    pend "TLS 1.2 is not supported" unless tls12_supported?
-
-    ctx_proc = proc { |ctx| ctx.ssl_version = :TLSv1_2 }
-    start_server(ctx_proc: ctx_proc) do |port|
+  def test_ctx_client_session_cb_tls12
+    start_server do |port|
       called = {}
       ctx = OpenSSL::SSL::SSLContext.new
+      ctx.min_version = ctx.max_version = :TLS1_2
       ctx.session_cache_mode = OpenSSL::SSL::SSLContext::SESSION_CACHE_CLIENT
       ctx.session_new_cb = lambda { |ary|
         sock, sess = ary
@@ -238,7 +233,6 @@ __EOS__
         ctx.session_remove_cb = lambda { |ary|
           ctx, sess = ary
           called[:remove] = [ctx, sess]
-          # any resulting value is OK (ignored)
         }
       end
 
@@ -246,8 +240,8 @@ __EOS__
         assert_equal(1, ctx.session_cache_stats[:cache_num])
         assert_equal(1, ctx.session_cache_stats[:connect_good])
         assert_equal([ssl, ssl.session], called[:new])
-        assert(ctx.session_remove(ssl.session))
-        assert(!ctx.session_remove(ssl.session))
+        assert_equal(true, ctx.session_remove(ssl.session))
+        assert_equal(false, ctx.session_remove(ssl.session))
         if TEST_SESSION_REMOVE_CB
           assert_equal([ctx, ssl.session], called[:remove])
         end
@@ -255,9 +249,55 @@ __EOS__
     end
   end
 
-  def test_ctx_server_session_cb
-    pend "TLS 1.2 is not supported" unless tls12_supported?
+  def test_ctx_client_session_cb_tls13
+    omit "TLS 1.3 not supported" unless tls13_supported?
+    omit "LibreSSL does not call session_new_cb in TLS 1.3" if libressl?
 
+    start_server do |port|
+      called = {}
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.min_version = :TLS1_3
+      ctx.session_cache_mode = OpenSSL::SSL::SSLContext::SESSION_CACHE_CLIENT
+      ctx.session_new_cb = lambda { |ary|
+        sock, sess = ary
+        called[:new] = [sock, sess]
+      }
+
+      server_connect_with_session(port, ctx, nil) { |ssl|
+        ssl.puts("abc"); assert_equal("abc\n", ssl.gets)
+
+        assert_operator(1, :<=, ctx.session_cache_stats[:cache_num])
+        assert_operator(1, :<=, ctx.session_cache_stats[:connect_good])
+        assert_equal([ssl, ssl.session], called[:new])
+      }
+    end
+  end
+
+  def test_ctx_client_session_cb_tls13_exception
+    omit "TLS 1.3 not supported" unless tls13_supported?
+    omit "LibreSSL does not call session_new_cb in TLS 1.3" if libressl?
+
+    server_proc = lambda do |ctx, ssl|
+      readwrite_loop(ctx, ssl)
+    rescue SystemCallError, OpenSSL::SSL::SSLError
+    end
+    start_server(server_proc: server_proc) do |port|
+      ctx = OpenSSL::SSL::SSLContext.new
+      ctx.min_version = :TLS1_3
+      ctx.session_cache_mode = OpenSSL::SSL::SSLContext::SESSION_CACHE_CLIENT
+      ctx.session_new_cb = lambda { |ary|
+        raise "in session_new_cb"
+      }
+
+      server_connect_with_session(port, ctx, nil) { |ssl|
+        assert_raise_with_message(RuntimeError, /in session_new_cb/) {
+          ssl.puts("abc"); assert_equal("abc\n", ssl.gets)
+        }
+      }
+    end
+  end
+
+  def test_ctx_server_session_cb
     connections = nil
     called = {}
     cctx = OpenSSL::SSL::SSLContext.new

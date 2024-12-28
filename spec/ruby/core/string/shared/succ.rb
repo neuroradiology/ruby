@@ -59,32 +59,29 @@ describe :string_succ, shared: true do
     "\xFF\xFF".send(@method).should == "\x01\x00\x00"
   end
 
-  it "returns subclass instances when called on a subclass" do
-    StringSpecs::MyString.new("").send(@method).should be_an_instance_of(StringSpecs::MyString)
-    StringSpecs::MyString.new("a").send(@method).should be_an_instance_of(StringSpecs::MyString)
-    StringSpecs::MyString.new("z").send(@method).should be_an_instance_of(StringSpecs::MyString)
+  it "returns String instances when called on a subclass" do
+    StringSpecs::MyString.new("").send(@method).should be_an_instance_of(String)
+    StringSpecs::MyString.new("a").send(@method).should be_an_instance_of(String)
+    StringSpecs::MyString.new("z").send(@method).should be_an_instance_of(String)
   end
 
-  ruby_version_is ''...'2.7' do
-    it "taints the result if self is tainted" do
-      ["", "a", "z", "Z", "9", "\xFF", "\xFF\xFF"].each do |s|
-        s.taint.send(@method).tainted?.should == true
-      end
-    end
+  it "returns a String in the same encoding as self" do
+    "z".encode("US-ASCII").send(@method).encoding.should == Encoding::US_ASCII
   end
 end
 
 describe :string_succ_bang, shared: true do
   it "is equivalent to succ, but modifies self in place (still returns self)" do
     ["", "abcd", "THX1138"].each do |s|
+      s = +s
       r = s.dup.send(@method)
       s.send(@method).should equal(s)
       s.should == r
     end
   end
 
-  it "raises a #{frozen_error_class} if self is frozen" do
-    -> { "".freeze.send(@method)     }.should raise_error(frozen_error_class)
-    -> { "abcd".freeze.send(@method) }.should raise_error(frozen_error_class)
+  it "raises a FrozenError if self is frozen" do
+    -> { "".freeze.send(@method)     }.should raise_error(FrozenError)
+    -> { "abcd".freeze.send(@method) }.should raise_error(FrozenError)
   end
 end

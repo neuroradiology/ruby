@@ -55,14 +55,6 @@ class TestEncoding < Test::Unit::TestCase
     assert_raise(TypeError, bug5150) {Encoding.find(1)}
   end
 
-  def test_replicate
-    assert_instance_of(Encoding, Encoding::UTF_8.replicate('UTF-8-ANOTHER'))
-    assert_instance_of(Encoding, Encoding::ISO_2022_JP.replicate('ISO-2022-JP-ANOTHER'))
-    bug3127 = '[ruby-dev:40954]'
-    assert_raise(TypeError, bug3127) {Encoding::UTF_8.replicate(0)}
-    assert_raise(ArgumentError, bug3127) {Encoding::UTF_8.replicate("\0")}
-  end
-
   def test_dummy_p
     assert_equal(true, Encoding::ISO_2022_JP.dummy?)
     assert_equal(false, Encoding::UTF_8.dummy?)
@@ -114,7 +106,7 @@ class TestEncoding < Test::Unit::TestCase
   end
 
   def test_errinfo_after_autoload
-    assert_separately(%w[--disable=gems], "#{<<~"begin;"}\n#{<<~'end;'}")
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
     bug9038 = '[ruby-core:57949] [Bug #9038]'
     begin;
       e = assert_raise_with_message(SyntaxError, /unknown regexp option - Q/, bug9038) {
@@ -130,8 +122,18 @@ class TestEncoding < Test::Unit::TestCase
       assert_equal(Encoding::US_ASCII, __ENCODING__)
       $:.unshift("/\x80")
       assert_raise_with_message(LoadError, /\[Bug #16382\]/) do
-        $:.resolve_feature_path "[Bug #16382]"
+        require "[Bug #16382]"
       end
+    end;
+  end
+
+  def test_ractor_load_encoding
+    assert_ractor("#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      Ractor.new{}.take
+      $-w = nil
+      Encoding.default_external = Encoding::ISO8859_2
+      assert "[Bug #19562]"
     end;
   end
 end

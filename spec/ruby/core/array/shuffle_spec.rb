@@ -25,12 +25,6 @@ describe "Array#shuffle" do
     ArraySpecs::MyArray[1, 2, 3].shuffle.should be_an_instance_of(Array)
   end
 
-  it "attempts coercion via #to_hash" do
-    obj = mock('hash')
-    obj.should_receive(:to_hash).once.and_return({})
-    [2, 3].shuffle(obj)
-  end
-
   it "calls #rand on the Object passed by the :random key in the arguments Hash" do
     obj = mock("array_shuffle_random")
     obj.should_receive(:rand).at_least(1).times.and_return(0.5)
@@ -51,6 +45,10 @@ describe "Array#shuffle" do
     random.should_receive(:rand).at_least(1).times.and_return(0.3)
 
     [1, 2].shuffle(random: random).should be_an_instance_of(Array)
+  end
+
+  it "accepts a Random class for the value for random: argument" do
+    [1, 2].shuffle(random: Random).should be_an_instance_of(Array)
   end
 
   it "calls #to_int on the Object returned by #rand" do
@@ -95,8 +93,18 @@ describe "Array#shuffle!" do
     a.should equal(original)
   end
 
-  it "raises a #{frozen_error_class} on a frozen array" do
-    -> { ArraySpecs.frozen_array.shuffle! }.should raise_error(frozen_error_class)
-    -> { ArraySpecs.empty_frozen_array.shuffle! }.should raise_error(frozen_error_class)
+  it "raises a FrozenError on a frozen array" do
+    -> { ArraySpecs.frozen_array.shuffle! }.should raise_error(FrozenError)
+    -> { ArraySpecs.empty_frozen_array.shuffle! }.should raise_error(FrozenError)
+  end
+
+  it "matches CRuby with random:" do
+    %w[a b c].shuffle(random: Random.new(1)).should == %w[a c b]
+    (0..10).to_a.shuffle(random: Random.new(10)).should == [2, 6, 8, 5, 7, 10, 3, 1, 0, 4, 9]
+  end
+
+  it "matches CRuby with srand" do
+    srand(123)
+    %w[a b c d e f g h i j k].shuffle.should == %w[a e f h i j d b g k c]
   end
 end

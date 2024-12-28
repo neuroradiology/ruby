@@ -69,9 +69,12 @@ describe :io_copy_stream_to_io, shared: true do
   end
 
   it "raises an IOError if the destination IO is not open for writing" do
-    @to_io.close
-    @to_io = new_io @to_name, "r"
-    -> { IO.copy_stream @object.from, @to_io }.should raise_error(IOError)
+    to_io = new_io __FILE__, "r"
+    begin
+      -> { IO.copy_stream @object.from, to_io }.should raise_error(IOError)
+    ensure
+      to_io.close
+    end
   end
 
   it "does not close the destination IO" do
@@ -109,7 +112,8 @@ describe "IO.copy_stream" do
   end
 
   after :each do
-    rm_r @to_name, @from_bigfile
+    rm_r @to_name if @to_name
+    rm_r @from_bigfile
   end
 
   describe "from an IO" do
@@ -159,6 +163,25 @@ describe "IO.copy_stream" do
 
       after :each do
         @to_io.close
+      end
+
+      it_behaves_like :io_copy_stream_to_io, nil, IOSpecs::CopyStream
+      it_behaves_like :io_copy_stream_to_io_with_offset, nil, IOSpecs::CopyStream
+    end
+
+    describe "to a Tempfile" do
+      before :all do
+        require 'tempfile'
+      end
+
+      before :each do
+        @to_io = Tempfile.new("rubyspec_copy_stream", encoding: Encoding::BINARY, mode: File::RDONLY)
+        @to_name = @to_io.path
+      end
+
+      after :each do
+        @to_io.close!
+        @to_name = nil # do not rm_r it, already done by Tempfile#close!
       end
 
       it_behaves_like :io_copy_stream_to_io, nil, IOSpecs::CopyStream
@@ -277,6 +300,44 @@ describe "IO.copy_stream" do
       @io.should_not_receive(:pos)
       IO.copy_stream(@io, @to_name)
     end
+  end
 
+  describe "with a destination that does partial reads" do
+    before do
+      @from_out, @from_in = IO.pipe
+      @to_out, @to_in = IO.pipe
+    end
+
+    after do
+      [@from_out, @from_in, @to_out, @to_in].each {|io| io.close rescue nil}
+    end
+
+    it "calls #write repeatedly on the destination Object" do
+      @from_in.write "1234"
+      @from_in.close
+
+      th = Thread.new do
+        IO.copy_stream(@from_out, @to_in)
+      end
+
+      copied = ""
+      4.times do
+        copied += @to_out.read(1)
+      end
+
+      th.join
+
+      copied.should == "1234"
+    end
+
+  end
+end
+
+describe "IO.copy_stream" do
+  it "does not use buffering when writing to STDOUT" do
+    IO.popen([*ruby_exe, fixture(__FILE__ , "copy_in_out.rb")], "r+") do |io|
+      io.write("bar")
+      io.read(3).should == "bar"
+    end
   end
 end

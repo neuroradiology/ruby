@@ -6,10 +6,10 @@ describe "Module#name" do
     Module.new.name.should be_nil
   end
 
-  it "is nil when assigned to a constant in an anonymous module" do
+  it "is not nil when assigned to a constant in an anonymous module" do
     m = Module.new
     m::N = Module.new
-    m::N.name.should be_nil
+    m::N.name.should.end_with? '::N'
   end
 
   it "is not nil for a nested module created with the module keyword" do
@@ -18,12 +18,31 @@ describe "Module#name" do
     m::N.name.should =~ /\A#<Module:0x[0-9a-f]+>::N\z/
   end
 
+  it "returns nil for a singleton class" do
+    Module.new.singleton_class.name.should be_nil
+    String.singleton_class.name.should be_nil
+    Object.new.singleton_class.name.should be_nil
+  end
+
   it "changes when the module is reachable through a constant path" do
     m = Module.new
     module m::N; end
     m::N.name.should =~ /\A#<Module:0x\h+>::N\z/
     ModuleSpecs::Anonymous::WasAnnon = m::N
     m::N.name.should == "ModuleSpecs::Anonymous::WasAnnon"
+  end
+
+  it "may be the repeated in different module objects" do
+    m = Module.new
+    n = Module.new
+
+    suppress_warning do
+      ModuleSpecs::Anonymous::SameName = m
+      ModuleSpecs::Anonymous::SameName = n
+    end
+
+    m.name.should == "ModuleSpecs::Anonymous::SameName"
+    n.name.should == "ModuleSpecs::Anonymous::SameName"
   end
 
   it "is set after it is removed from a constant" do
@@ -53,10 +72,16 @@ describe "Module#name" do
     ModuleSpecs::Anonymous.name.should == "ModuleSpecs::Anonymous"
   end
 
-  it "is set when assigning to a constant" do
+  it "is set when assigning to a constant (constant path matches outer module name)" do
     m = Module.new
     ModuleSpecs::Anonymous::A = m
     m.name.should == "ModuleSpecs::Anonymous::A"
+  end
+
+  it "is set when assigning to a constant (constant path does not match outer module name)" do
+    m = Module.new
+    ModuleSpecs::Anonymous::SameChild::A = m
+    m.name.should == "ModuleSpecs::Anonymous::Child::A"
   end
 
   it "is not modified when assigning to a new constant after it has been accessed" do
@@ -95,34 +120,74 @@ describe "Module#name" do
     ModuleSpecs::NameEncoding.new.name.encoding.should == Encoding::UTF_8
   end
 
-  it "is set when the anonymous outer module name is set" do
+  it "is set when the anonymous outer module name is set (module in one single constant)" do
     m = Module.new
     m::N = Module.new
     ModuleSpecs::Anonymous::E = m
     m::N.name.should == "ModuleSpecs::Anonymous::E::N"
   end
 
-  ruby_version_is ""..."2.7" do
-    it "returns a mutable string" do
-      ModuleSpecs.name.frozen?.should be_false
+  # https://bugs.ruby-lang.org/issues/19681
+  it "is set when the anonymous outer module name is set (module in several constants)" do
+    m = Module.new
+    m::N = Module.new
+    m::O = m::N
+    ModuleSpecs::Anonymous::StoredInMultiplePlaces = m
+    valid_names = [
+      "ModuleSpecs::Anonymous::StoredInMultiplePlaces::N",
+      "ModuleSpecs::Anonymous::StoredInMultiplePlaces::O"
+    ]
+    valid_names.should include(m::N.name) # You get one of the two, but you don't know which one.
+  end
+
+  ruby_version_is "3.2" do
+    it "is set in #const_added callback when a module defined in the top-level scope" do
+      ruby_exe(<<~RUBY, args: "2>&1").chomp.should == "TEST1\nTEST2"
+        class Module
+          def const_added(name)
+            puts const_get(name).name
+          end
+        end
+
+        # module with name
+        module TEST1
+        end
+
+        # anonymous module
+        TEST2 = Module.new
+      RUBY
     end
 
-    it "returns a mutable string that when mutated does not modify the original module name" do
-      ModuleSpecs.name << "foo"
+    it "is set in #const_added callback for a nested module when an outer module defined in the top-level scope" do
+      ScratchPad.record []
 
-      ModuleSpecs.name.should == "ModuleSpecs"
+      ModuleSpecs::NameSpecs::NamedModule = Module.new do
+        def self.const_added(name)
+          ScratchPad << const_get(name).name
+        end
+
+        module self::A
+          def self.const_added(name)
+            ScratchPad << const_get(name).name
+          end
+
+          module self::B
+          end
+        end
+      end
+
+      ScratchPad.recorded.should.one?(/#<Module.+>::A$/)
+      ScratchPad.recorded.should.one?(/#<Module.+>::A::B$/)
     end
   end
 
-  ruby_version_is "2.7" do
-    it "returns a frozen String" do
-      ModuleSpecs.name.frozen?.should == true
-    end
+  it "returns a frozen String" do
+    ModuleSpecs.name.should.frozen?
+  end
 
-    it "always returns the same String for a given Module" do
-      s1 = ModuleSpecs.name
-      s2 = ModuleSpecs.name
-      s1.should equal(s2)
-    end
+  it "always returns the same String for a given Module" do
+    s1 = ModuleSpecs.name
+    s2 = ModuleSpecs.name
+    s1.should equal(s2)
   end
 end

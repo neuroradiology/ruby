@@ -4,8 +4,11 @@ describe :file_readable, shared: true do
     platform_is :windows do
       @file2 = File.join(ENV["WINDIR"], "system32/drivers/etc/services").tr(File::SEPARATOR, File::ALT_SEPARATOR)
     end
-    platform_is_not :windows do
+    platform_is_not :windows, :android do
       @file2 = "/etc/passwd"
+    end
+    platform_is :android do
+      @file2 = "/system/bin/sh"
     end
   end
 
@@ -20,6 +23,22 @@ describe :file_readable, shared: true do
 
   it "accepts an object that has a #to_path method" do
     @object.send(@method, mock_to_path(@file2)).should == true
+  end
+
+  platform_is_not :windows do
+    as_superuser do
+      context "when run by a superuser" do
+        it "returns true unconditionally" do
+          file = tmp('temp.txt')
+          touch file
+
+          File.chmod(0333, file)
+          @object.send(@method, file).should == true
+
+          rm_r file
+        end
+      end
+    end
   end
 end
 

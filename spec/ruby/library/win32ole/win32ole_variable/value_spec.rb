@@ -1,4 +1,7 @@
+require_relative "../../../spec_helper"
 platform_is :windows do
+  verbose, $VERBOSE = $VERBOSE, nil
+
   require 'win32ole'
 
   describe "WIN32OLE_VARIABLE#value" do
@@ -9,11 +12,13 @@ platform_is :windows do
       @var = ole_type.variables[0]
     end
 
-    it "returns a Integer" do
+    it "returns an Integer" do
       # according to doc, this could return nil
       @var.value.should be_kind_of Integer
     end
 
   end
 
+ensure
+  $VERBOSE = verbose
 end

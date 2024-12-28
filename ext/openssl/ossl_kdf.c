@@ -3,7 +3,7 @@
  * Copyright (C) 2007, 2017 Ruby/OpenSSL Project Authors
  */
 #include "ossl.h"
-#if OPENSSL_VERSION_NUMBER >= 0x10100000 && !defined(LIBRESSL_VERSION_NUMBER)
+#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
 # include <openssl/kdf.h>
 #endif
 
@@ -18,10 +18,10 @@ static VALUE mKDF, eKDF;
  * of _length_ bytes.
  *
  * For more information about PBKDF2, see RFC 2898 Section 5.2
- * (https://tools.ietf.org/html/rfc2898#section-5.2).
+ * (https://www.rfc-editor.org/rfc/rfc2898#section-5.2).
  *
  * === Parameters
- * pass       :: The passphrase.
+ * pass       :: The password.
  * salt       :: The salt. Salts prevent attacks based on dictionaries of common
  *               passwords and attacks based on rainbow tables. It is a public
  *               value that can be safely stored along with the password (e.g.
@@ -81,10 +81,10 @@ kdf_pbkdf2_hmac(int argc, VALUE *argv, VALUE self)
  * bcrypt.
  *
  * The keyword arguments _N_, _r_ and _p_ can be used to tune scrypt. RFC 7914
- * (published on 2016-08, https://tools.ietf.org/html/rfc7914#section-2) states
+ * (published on 2016-08, https://www.rfc-editor.org/rfc/rfc7914#section-2) states
  * that using values r=8 and p=1 appears to yield good results.
  *
- * See RFC 7914 (https://tools.ietf.org/html/rfc7914) for more information.
+ * See RFC 7914 (https://www.rfc-editor.org/rfc/rfc7914) for more information.
  *
  * === Parameters
  * pass   :: Passphrase.
@@ -141,13 +141,13 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
 }
 #endif
 
-#if OPENSSL_VERSION_NUMBER >= 0x10100000 && !defined(LIBRESSL_VERSION_NUMBER)
+#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
 /*
  * call-seq:
  *    KDF.hkdf(ikm, salt:, info:, length:, hash:) -> String
  *
  * HMAC-based Extract-and-Expand Key Derivation Function (HKDF) as specified in
- * {RFC 5869}[https://tools.ietf.org/html/rfc5869].
+ * {RFC 5869}[https://www.rfc-editor.org/rfc/rfc5869].
  *
  * New in OpenSSL 1.1.0.
  *
@@ -163,6 +163,14 @@ kdf_scrypt(int argc, VALUE *argv, VALUE self)
  *   HashLen is the length of the hash function output in octets.
  * _hash_::
  *   The hash function.
+ *
+ * === Example
+ *   # The values from https://www.rfc-editor.org/rfc/rfc5869#appendix-A.1
+ *   ikm = ["0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"].pack("H*")
+ *   salt = ["000102030405060708090a0b0c"].pack("H*")
+ *   info = ["f0f1f2f3f4f5f6f7f8f9"].pack("H*")
+ *   p OpenSSL::KDF.hkdf(ikm, salt: salt, info: info, length: 42, hash: "SHA256").unpack1("H*")
+ *   # => "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
  */
 static VALUE
 kdf_hkdf(int argc, VALUE *argv, VALUE self)
@@ -272,7 +280,7 @@ Init_ossl_kdf(void)
      *   # store this with the generated value
      *   salt = OpenSSL::Random.random_bytes(16)
      *   iter = 20_000
-     *   hash = OpenSSL::Digest::SHA256.new
+     *   hash = OpenSSL::Digest.new('SHA256')
      *   len = hash.digest_length
      *   # the final value to be stored
      *   value = OpenSSL::KDF.pbkdf2_hmac(pass, salt: salt, iterations: iter,
@@ -284,24 +292,8 @@ Init_ossl_kdf(void)
      * Typically, "==" short-circuits on evaluation, and is therefore
      * vulnerable to timing attacks. The proper way is to use a method that
      * always takes the same amount of time when comparing two values, thus
-     * not leaking any information to potential attackers. To compare two
-     * values, the following could be used:
-     *
-     *   def eql_time_cmp(a, b)
-     *     unless a.length == b.length
-     *       return false
-     *     end
-     *     cmp = b.bytes
-     *     result = 0
-     *     a.bytes.each_with_index {|c,i|
-     *       result |= c ^ cmp[i]
-     *     }
-     *     result == 0
-     *   end
-     *
-     * Please note that the premature return in case of differing lengths
-     * typically does not leak valuable information - when using PBKDF2, the
-     * length of the values to be compared is of fixed size.
+     * not leaking any information to potential attackers. To do this, use
+     * +OpenSSL.fixed_length_secure_compare+.
      */
     mKDF = rb_define_module_under(mOSSL, "KDF");
     /*
@@ -313,7 +305,7 @@ Init_ossl_kdf(void)
 #if defined(HAVE_EVP_PBE_SCRYPT)
     rb_define_module_function(mKDF, "scrypt", kdf_scrypt, -1);
 #endif
-#if OPENSSL_VERSION_NUMBER >= 0x10100000 && !defined(LIBRESSL_VERSION_NUMBER)
+#if OSSL_OPENSSL_PREREQ(1, 1, 0) || OSSL_LIBRESSL_PREREQ(3, 6, 0)
     rb_define_module_function(mKDF, "hkdf", kdf_hkdf, -1);
 #endif
 }

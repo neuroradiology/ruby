@@ -2,21 +2,31 @@
 ##  This file is part of the "Coroutine" project and released under the MIT License.
 ##
 ##  Created by Samuel Williams on 10/5/2018.
-##  Copyright, 2018, by Samuel Williams. All rights reserved.
+##  Copyright, 2018, by Samuel Williams.
 ##
 
-.text
+#define TOKEN_PASTE(x,y) x##y
 
-.globl coroutine_transfer
-coroutine_transfer:
+.file "Context.S"
+.text
+.globl PREFIXED_SYMBOL(coroutine_transfer)
+.align 2
+.type PREFIXED_SYMBOL(coroutine_transfer),%function
+.syntax unified
+
+PREFIXED_SYMBOL(coroutine_transfer):
 	# Save caller state (8 registers + return address)
 	push {r4-r11,lr}
-	
+
 	# Save caller stack pointer
 	str sp, [r0]
-	
+
 	# Restore callee stack pointer
 	ldr sp, [r1]
-	
+
 	# Restore callee state (8 registers program counter)
 	pop {r4-r11,pc}
+
+#if defined(__linux__) && defined(__ELF__)
+.section .note.GNU-stack,"",%progbits
+#endif

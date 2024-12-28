@@ -72,8 +72,20 @@ describe "Kernel#extend" do
       -> { @frozen.extend }.should raise_error(ArgumentError)
     end
 
-    it "raises a #{frozen_error_class}" do
-      -> { @frozen.extend @module }.should raise_error(frozen_error_class)
+    it "raises a FrozenError" do
+      -> { @frozen.extend @module }.should raise_error(FrozenError)
     end
+  end
+
+  it "updated class methods of a module when it extends self and includes another module" do
+    a = Module.new do
+      extend self
+    end
+    b = Module.new do
+      def foo; :foo; end
+    end
+
+    a.include b
+    a.foo.should == :foo
   end
 end

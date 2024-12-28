@@ -44,11 +44,11 @@ module Bundler
       end
     end
 
-  private
+    private
 
     def last_version_number
       definition = Bundler.definition(true)
-      definition.resolve_remotely!
+      definition.remotely!
       specs = definition.index[name].sort_by(&:version)
       unless options[:pre]
         specs.delete_if {|b| b.respond_to?(:version) && b.version.prerelease? }

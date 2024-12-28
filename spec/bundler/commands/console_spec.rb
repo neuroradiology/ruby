@@ -1,18 +1,53 @@
 # frozen_string_literal: true
 
-RSpec.describe "bundle console", :bundler => "< 3" do
+RSpec.describe "bundle console", readline: true do
   before :each do
+    build_repo2 do
+      # A minimal fake pry console
+      build_gem "pry" do |s|
+        s.write "lib/pry.rb", <<-RUBY
+          class Pry
+            class << self
+              def toplevel_binding
+                unless defined?(@toplevel_binding) && @toplevel_binding
+                  TOPLEVEL_BINDING.eval %{
+                    def self.__pry__; binding; end
+                    Pry.instance_variable_set(:@toplevel_binding, __pry__)
+                    class << self; undef __pry__; end
+                  }
+                end
+                @toplevel_binding.eval('private')
+                @toplevel_binding
+              end
+
+              def __pry__
+                while line = gets
+                  begin
+                    puts eval(line, toplevel_binding).inspect.sub(/^"(.*)"$/, '=> \\1')
+                  rescue Exception => e
+                    puts "\#{e.class}: \#{e.message}"
+                    puts e.backtrace.first
+                  end
+                end
+              end
+              alias start __pry__
+            end
+          end
+        RUBY
+      end
+    end
+
     install_gemfile <<-G
-      source "#{file_uri_for(gem_repo1)}"
-      gem "rack"
+      source "https://gem.repo2"
+      gem "myrack"
       gem "activesupport", :group => :test
-      gem "rack_middleware", :group => :development
+      gem "myrack_middleware", :group => :development
     G
   end
 
   it "starts IRB with the default group loaded" do
     bundle "console" do |input, _, _|
-      input.puts("puts RACK")
+      input.puts("puts MYRACK")
       input.puts("exit")
     end
     expect(out).to include("0.9.1")
@@ -20,15 +55,15 @@ RSpec.describe "bundle console", :bundler => "< 3" do
 
   it "uses IRB as default console" do
     bundle "console" do |input, _, _|
-      input.puts("__method__")
+      input.puts("__FILE__")
       input.puts("exit")
     end
-    expect(out).to include(":irb_binding")
+    expect(out).to include("(irb)")
   end
 
   it "starts another REPL if configured as such" do
     install_gemfile <<-G
-      source "#{file_uri_for(gem_repo1)}"
+      source "https://gem.repo2"
       gem "pry"
     G
     bundle "config set console pry"
@@ -45,10 +80,10 @@ RSpec.describe "bundle console", :bundler => "< 3" do
     # make sure pry isn't there
 
     bundle "console" do |input, _, _|
-      input.puts("__method__")
+      input.puts("__FILE__")
       input.puts("exit")
     end
-    expect(out).to include(":irb_binding")
+    expect(out).to include("(irb)")
   end
 
   it "doesn't load any other groups" do
@@ -70,7 +105,7 @@ RSpec.describe "bundle console", :bundler => "< 3" do
 
     it "loads the default group" do
       bundle "console test" do |input, _, _|
-        input.puts("puts RACK")
+        input.puts("puts MYRACK")
         input.puts("exit")
       end
       expect(out).to include("0.9.1")
@@ -78,7 +113,7 @@ RSpec.describe "bundle console", :bundler => "< 3" do
 
     it "doesn't load other groups" do
       bundle "console test" do |input, _, _|
-        input.puts("puts RACK_MIDDLEWARE")
+        input.puts("puts MYRACK_MIDDLEWARE")
         input.puts("exit")
       end
       expect(out).to include("NameError")
@@ -87,10 +122,10 @@ RSpec.describe "bundle console", :bundler => "< 3" do
 
   it "performs an automatic bundle install" do
     gemfile <<-G
-      source "#{file_uri_for(gem_repo1)}"
-      gem "rack"
+      source "https://gem.repo2"
+      gem "myrack"
       gem "activesupport", :group => :test
-      gem "rack_middleware", :group => :development
+      gem "myrack_middleware", :group => :development
       gem "foo"
     G
 

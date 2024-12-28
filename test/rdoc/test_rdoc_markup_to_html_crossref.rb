@@ -1,12 +1,13 @@
 # frozen_string_literal: true
-require File.expand_path '../xref_test_case', __FILE__
+require_relative 'xref_test_case'
 
-class TestRDocMarkupToHtmlCrossref < XrefTestCase
+class RDocMarkupToHtmlCrossrefTest < XrefTestCase
 
   def setup
     super
 
     @options.hyperlink_all = true
+    @options.warn_missing_rdoc_ref = true
 
     @to = RDoc::Markup::ToHtmlCrossref.new @options, 'index.html', @c1
   end
@@ -15,6 +16,24 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
     result = @to.convert 'C1'
 
     assert_equal para("<a href=\"C1.html\"><code>C1</code></a>"), result
+
+    result = @to.convert '+C1+'
+    assert_equal para("<a href=\"C1.html\"><code>C1</code></a>"), result
+
+    result = @to.convert 'FOO'
+    assert_equal para("FOO"), result
+
+    result = @to.convert '+FOO+'
+    assert_equal para("<code>FOO</code>"), result
+
+    result = @to.convert '<tt># :stopdoc:</tt>:'
+    assert_equal para("<code># :stopdoc:</code>:"), result
+  end
+
+  def test_convert_CROSSREF_method
+    result = @to.convert 'C1#m(foo, bar, baz)'
+
+    assert_equal para("<a href=\"C1.html#method-i-m\"><code>C1#m(foo, bar, baz)</code></a>"), result
   end
 
   def test_convert_CROSSREF_label
@@ -61,6 +80,16 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
     assert_equal para("<a href=\"C1.html\"><code>C1</code></a>"), result
   end
 
+  def test_convert_RDOCLINK_rdoc_ref_not_found
+    result = nil
+    stdout, _ = capture_output do
+      result = @to.convert 'rdoc-ref:FOO'
+    end
+
+    assert_equal para("FOO"), result
+    assert_include stdout, "index.html: `rdoc-ref:FOO` can't be resolved for `FOO`"
+  end
+
   def test_convert_RDOCLINK_rdoc_ref_method
     result = @to.convert 'rdoc-ref:C1#m'
 
@@ -89,6 +118,20 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
     assert_equal para("<a href=\"C1.html#method-c-25\"><code>C1::%</code></a>"), result
   end
 
+  def test_convert_RDOCLINK_rdoc_ref_method_escape_html
+    m = @c1.add_method RDoc::AnyMethod.new nil, '<<'
+    m.singleton = false
+
+    result = @to.convert 'rdoc-ref:C1#<<'
+
+    assert_equal para("<a href=\"C1.html#method-i-3C-3C\"><code>C1#&lt;&lt;</code></a>"), result
+    m.singleton = true
+
+    result = @to.convert 'rdoc-ref:C1::<<'
+
+    assert_equal para("<a href=\"C1.html#method-c-3C-3C\"><code>C1::&lt;&lt;</code></a>"), result
+  end
+
   def test_convert_RDOCLINK_rdoc_ref_method_percent_label
     m = @c1.add_method RDoc::AnyMethod.new nil, '%'
     m.singleton = false
@@ -113,12 +156,32 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
                  'rdoc-ref:C1@foo'
   end
 
+  def test_convert_RDOCLINK_rdoc_ref_label_in_current_file
+    result = @to.convert 'rdoc-ref:@foo'
+
+    assert_equal para("<a href=\"#label-foo\">foo</a>"), result,
+                 'rdoc-ref:@foo'
+
+    result = @to.convert '{Foo}[rdoc-ref:@foo]'
+
+    assert_equal para("<a href=\"#label-foo\">Foo</a>"), result,
+                 '{Foo}[rdoc-ref:@foo]'
+  end
+
   def test_gen_url
     assert_equal '<a href="C1.html">Some class</a>',
                  @to.gen_url('rdoc-ref:C1', 'Some class')
 
     assert_equal '<a href="http://example">HTTP example</a>',
                  @to.gen_url('http://example', 'HTTP example')
+  end
+
+  def test_gen_url_rdoc_ref_not_found
+    stdout, _ = capture_output do
+      @to.gen_url 'rdoc-ref:FOO', 'FOO'
+    end
+
+    assert_include stdout, "index.html: `rdoc-ref:FOO` can't be resolved for `FOO`"
   end
 
   def test_handle_regexp_CROSSREF
@@ -135,6 +198,13 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
 
     assert_equal "<a href=\"C1.html#method-i-m\"><code>m</code></a>",
                  REGEXP_HANDLING('#m')
+  end
+
+  def test_handle_regexp_CROSSREF_with_arg_looks_like_TIDYLINK
+    result = @to.convert 'C1.m[:sym]'
+
+    assert_equal para("<a href=\"C1.html#method-c-m\"><code>C1.m[:sym]</code></a>"), result,
+                 'C1.m[:sym]'
   end
 
   def test_handle_regexp_HYPERLINK_rdoc
@@ -239,4 +309,3 @@ class TestRDocMarkupToHtmlCrossref < XrefTestCase
   end
 
 end
-

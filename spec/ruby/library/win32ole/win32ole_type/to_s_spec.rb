@@ -1,6 +1,9 @@
+require_relative "../../../spec_helper"
 require_relative 'shared/name'
 
 platform_is :windows do
+  verbose, $VERBOSE = $VERBOSE, nil
+
   require 'win32ole'
 
   describe "WIN32OLE_TYPE#to_s" do
@@ -8,4 +11,6 @@ platform_is :windows do
 
   end
 
+ensure
+  $VERBOSE = verbose
 end

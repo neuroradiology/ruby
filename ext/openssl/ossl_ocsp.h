@@ -6,17 +6,10 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #if !defined(_OSSL_OCSP_H_)
 #define _OSSL_OCSP_H_
-
-#if !defined(OPENSSL_NO_OCSP)
-extern VALUE mOCSP;
-extern VALUE cOPCSReq;
-extern VALUE cOPCSRes;
-extern VALUE cOPCSBasicRes;
-#endif
 
 void Init_ossl_ocsp(void);
 

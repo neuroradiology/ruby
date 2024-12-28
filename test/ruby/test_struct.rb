@@ -23,6 +23,10 @@ module TestStruct
 
     test.bar = 47
     assert_equal(47, test.bar)
+
+    @Struct.class_eval do
+      remove_const :Test
+    end
   end
 
   # [ruby-dev:26247] more than 10 struct members causes segmentation fault
@@ -35,6 +39,14 @@ module TestStruct
       end
       list.pop
     end
+  end
+
+  def test_larger_than_largest_pool
+    count = (GC::INTERNAL_CONSTANTS[:RVARGC_MAX_ALLOCATE_SIZE] / RbConfig::SIZEOF["void*"]) + 1
+    list = Array(0..count)
+    klass = @Struct.new(*list.map { |i| :"a_#{i}"})
+    struct = klass.new(*list)
+    assert_equal 0, struct.a_0
   end
 
   def test_small_structs
@@ -96,8 +108,9 @@ module TestStruct
     assert_equal([:utime, :stime, :cutime, :cstime], Process.times.members)
   end
 
-  def test_struct_new_with_empty_hash
-    assert_equal({:a=>1}, Struct.new(:a, {}).new({:a=>1}).a)
+  def test_struct_new_with_hash
+    assert_raise_with_message(TypeError, /not a symbol/) {Struct.new(:a, {})}
+    assert_raise_with_message(TypeError, /not a symbol/) {Struct.new(:a, {name: "b"})}
   end
 
   def test_struct_new_with_keyword_init
@@ -114,10 +127,9 @@ module TestStruct
     assert_equal "#{@Struct}::KeywordInitFalse", @Struct::KeywordInitFalse.inspect
     assert_equal "#{@Struct}::KeywordInitTrue(keyword_init: true)", @Struct::KeywordInitTrue.inspect
     # eval is needed to prevent the warning duplication filter
-    k = eval("Class.new(@Struct::KeywordInitFalse) {def initialize(**) end}")
-    assert_warn(/Using the last argument as keyword parameters is deprecated/) {k.new(a: 1, b: 2)}
-    k = Class.new(@Struct::KeywordInitTrue) {def initialize(**) end}
-    assert_warn('') {k.new(a: 1, b: 2)}
+    k = Class.new(@Struct::KeywordInitTrue) {def initialize(b, options); super(a: options, b: b); end}
+    o = assert_warn('') { k.new(42, {foo: 1, bar: 2}) }
+    assert_equal(1, o.a[:foo])
 
     @Struct.instance_eval do
       remove_const(:KeywordInitTrue)
@@ -135,6 +147,17 @@ module TestStruct
     assert_equal(3, struct.new(a: 1, b: 2).c)
   end
 
+  def test_struct_keyword_init_p
+    struct = @Struct.new(:a, :b, keyword_init: true)
+    assert_equal(true, struct.keyword_init?)
+
+    struct = @Struct.new(:a, :b, keyword_init: false)
+    assert_equal(false, struct.keyword_init?)
+
+    struct = @Struct.new(:a, :b)
+    assert_nil(struct.keyword_init?)
+  end
+
   def test_initialize
     klass = @Struct.new(:a)
     assert_raise(ArgumentError) { klass.new(1, 2) }
@@ -144,6 +167,17 @@ module TestStruct
       end
     end
     assert_equal 3, klass.new(1,2).total
+  end
+
+  def test_initialize_with_kw
+    klass = @Struct.new(:foo, :options) do
+      def initialize(foo, **options)
+        super(foo, options)
+      end
+    end
+    assert_equal({}, klass.new(42, **Hash.new).options)
+    x = assert_warn('') { klass.new(1, bar: 2) }
+    assert_equal 2, x.options[:bar]
   end
 
   def test_each
@@ -325,15 +359,30 @@ module TestStruct
   end
 
   def test_redefinition_warning
-    @Struct.new("RedefinitionWarning")
+    @Struct.new(name = "RedefinitionWarning")
     e = EnvUtil.verbose_warning do
       @Struct.new("RedefinitionWarning")
     end
     assert_match(/redefining constant #@Struct::RedefinitionWarning/, e)
+
+    @Struct.class_eval do
+      remove_const name
+    end
+  end
+
+  def test_keyword_args_warning
+    assert_warn('') { assert_equal(1, @Struct.new(:a).new(a: 1).a) }
+    assert_warn('') { assert_equal(1, @Struct.new(:a, keyword_init: nil).new(a: 1).a) }
+    assert_warn('') { assert_equal({a: 1}, @Struct.new(:a).new({a: 1}).a) }
+    assert_warn('') { assert_equal({a: 1}, @Struct.new(:a, :b).new(1, a: 1).b) }
+    assert_warn('') { assert_equal(1, @Struct.new(:a, keyword_init: true).new(a: 1).a) }
+    assert_warn('') { assert_equal({a: 1}, @Struct.new(:a, keyword_init: nil).new({a: 1}).a) }
+    assert_warn('') { assert_equal({a: 1}, @Struct.new(:a, keyword_init: false).new(a: 1).a) }
+    assert_warn('') { assert_equal({a: 1}, @Struct.new(:a, keyword_init: false).new({a: 1}).a) }
   end
 
   def test_nonascii
-    struct_test = @Struct.new("R\u{e9}sum\u{e9}", :"r\u{e9}sum\u{e9}")
+    struct_test = @Struct.new(name = "R\u{e9}sum\u{e9}", :"r\u{e9}sum\u{e9}")
     assert_equal(@Struct.const_get("R\u{e9}sum\u{e9}"), struct_test, '[ruby-core:24849]')
     a = struct_test.new(42)
     assert_equal("#<struct #@Struct::R\u{e9}sum\u{e9} r\u{e9}sum\u{e9}=42>", a.inspect, '[ruby-core:24849]')
@@ -342,6 +391,10 @@ module TestStruct
     end
     assert_nothing_raised(Encoding::CompatibilityError) do
       assert_match(/redefining constant #@Struct::R\u{e9}sum\u{e9}/, e)
+    end
+
+    @Struct.class_eval do
+      remove_const name
     end
   end
 
@@ -442,6 +495,57 @@ module TestStruct
     assert_raise(TypeError) {
       o.deconstruct_keys(0)
     }
+  end
+
+  def test_public_send
+    klass = @Struct.new(:a)
+    x = klass.new(1)
+    assert_equal(1, x.public_send("a"))
+    assert_equal(42, x.public_send("a=", 42))
+    assert_equal(42, x.public_send("a"))
+  end
+
+  def test_arity
+    klass = @Struct.new(:a)
+    assert_equal 0, klass.instance_method(:a).arity
+    assert_equal 1, klass.instance_method(:a=).arity
+
+    klass.module_eval do
+      define_method(:b=, instance_method(:a=))
+      alias c= a=
+    end
+
+    assert_equal 1, klass.instance_method(:b=).arity
+    assert_equal 1, klass.instance_method(:c=).arity
+  end
+
+  def test_parameters
+    klass = @Struct.new(:a)
+    assert_equal [], klass.instance_method(:a).parameters
+    # NOTE: :_ may not be a spec.
+    assert_equal [[:req, :_]], klass.instance_method(:a=).parameters
+
+    klass.module_eval do
+      define_method(:b=, instance_method(:a=))
+      alias c= a=
+    end
+
+    assert_equal [[:req, :_]], klass.instance_method(:b=).parameters
+    assert_equal [[:req, :_]], klass.instance_method(:c=).parameters
+  end
+
+  def test_named_structs_are_not_rooted
+    # [Bug #20311]
+    assert_no_memory_leak([], <<~PREP, <<~CODE, rss: true)
+      code = proc do
+        Struct.new("A")
+        Struct.send(:remove_const, :A)
+      end
+
+      1_000.times(&code)
+    PREP
+      50_000.times(&code)
+    CODE
   end
 
   class TopStruct < Test::Unit::TestCase

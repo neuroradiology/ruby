@@ -137,7 +137,7 @@ describe "File.expand_path" do
   it "returns a String in the same encoding as the argument" do
     Encoding.default_external = Encoding::SHIFT_JIS
 
-    path = "./a".force_encoding Encoding::CP1251
+    path = "./a".dup.force_encoding Encoding::CP1251
     File.expand_path(path).encoding.should equal(Encoding::CP1251)
 
     weird_path = [222, 173, 190, 175].pack('C*')
@@ -203,9 +203,9 @@ platform_is_not :windows do
 
     it "does not return a frozen string" do
       home = "/rubyspec_home"
-      File.expand_path('~').frozen?.should == false
-      File.expand_path('~', '/tmp/gumby/ddd').frozen?.should == false
-      File.expand_path('~/a', '/tmp/gumby/ddd').frozen?.should == false
+      File.expand_path('~').should_not.frozen?
+      File.expand_path('~', '/tmp/gumby/ddd').should_not.frozen?
+      File.expand_path('~/a', '/tmp/gumby/ddd').should_not.frozen?
     end
   end
 

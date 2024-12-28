@@ -1,15 +1,17 @@
 # frozen_string_literal: true
-require 'rubygems/command'
-require 'rubygems/commands/query_command'
 
-class Gem::Commands::SearchCommand < Gem::Commands::QueryCommand
+require_relative "../command"
+require_relative "../query_utils"
+
+class Gem::Commands::SearchCommand < Gem::Command
+  include Gem::QueryUtils
 
   def initialize
-    super 'search', 'Display remote gems whose name matches REGEXP'
+    super "search", "Display remote gems whose name matches REGEXP",
+         domain: :remote, details: false, versions: true,
+         installed: nil, version: Gem::Requirement.default
 
-    remove_option '--name-matches'
-
-    defaults[:domain] = :remote
+    add_query_options
   end
 
   def arguments # :nodoc:
@@ -36,5 +38,4 @@ To list local gems use the list command.
   def usage # :nodoc:
     "#{program_name} [REGEXP]"
   end
-
 end

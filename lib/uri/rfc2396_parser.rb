@@ -3,7 +3,6 @@
 # = uri/common.rb
 #
 # Author:: Akira Yamada <akira@ruby-lang.org>
-# Revision:: $Id$
 # License::
 #   You can redistribute it and/or modify it under the same term as Ruby.
 #
@@ -117,7 +116,7 @@ module URI
     # See also URI::Parser.initialize_regexp.
     attr_reader :regexp
 
-    # Returns a split URI against regexp[:ABS_URI].
+    # Returns a split URI against +regexp[:ABS_URI]+.
     def split(uri)
       case uri
       when ''
@@ -141,11 +140,11 @@ module URI
 
         if !scheme
           raise InvalidURIError,
-            "bad URI(absolute but no scheme): #{uri}"
+            "bad URI (absolute but no scheme): #{uri}"
         end
         if !opaque && (!path && (!host && !registry))
           raise InvalidURIError,
-            "bad URI(absolute but no path): #{uri}"
+            "bad URI (absolute but no path): #{uri}"
         end
 
       when @regexp[:REL_URI]
@@ -174,7 +173,7 @@ module URI
         # server        = [ [ userinfo "@" ] hostport ]
 
       else
-        raise InvalidURIError, "bad URI(is not URI?): #{uri}"
+        raise InvalidURIError, "bad URI (is not URI?): #{uri}"
       end
 
       path = '' if !path && !opaque # (see RFC2396 Section 5.2)
@@ -208,20 +207,8 @@ module URI
     #   #=> #<URI::LDAP ldap://ldap.example.com/dc=example?user=john>
     #
     def parse(uri)
-      scheme, userinfo, host, port,
-        registry, path, opaque, query, fragment = self.split(uri)
-
-      if scheme && URI.scheme_list.include?(scheme.upcase)
-        URI.scheme_list[scheme.upcase].new(scheme, userinfo, host, port,
-                                           registry, path, opaque, query,
-                                           fragment, self)
-      else
-        Generic.new(scheme, userinfo, host, port,
-                    registry, path, opaque, query,
-                    fragment, self)
-      end
+      URI.for(*self.split(uri), self)
     end
-
 
     #
     # == Args
@@ -270,8 +257,8 @@ module URI
       end
     end
 
-    # Returns Regexp that is default self.regexp[:ABS_URI_REF],
-    # unless +schemes+ is provided. Then it is a Regexp.union with self.pattern[:X_ABS_URI].
+    # Returns Regexp that is default +self.regexp[:ABS_URI_REF]+,
+    # unless +schemes+ is provided. Then it is a Regexp.union with +self.pattern[:X_ABS_URI]+.
     def make_regexp(schemes = nil)
       unless schemes
         @regexp[:ABS_URI_REF]
@@ -290,7 +277,7 @@ module URI
     # +str+::
     #    String to make safe
     # +unsafe+::
-    #    Regexp to apply. Defaults to self.regexp[:UNSAFE]
+    #    Regexp to apply. Defaults to +self.regexp[:UNSAFE]+
     #
     # == Description
     #
@@ -322,7 +309,7 @@ module URI
     # +str+::
     #    String to remove escapes from
     # +escaped+::
-    #    Regexp to apply. Defaults to self.regexp[:ESCAPED]
+    #    Regexp to apply. Defaults to +self.regexp[:ESCAPED]+
     #
     # == Description
     #
@@ -335,8 +322,14 @@ module URI
     end
 
     @@to_s = Kernel.instance_method(:to_s)
-    def inspect
-      @@to_s.bind_call(self)
+    if @@to_s.respond_to?(:bind_call)
+      def inspect
+        @@to_s.bind_call(self)
+      end
+    else
+      def inspect
+        @@to_s.bind(self).call
+      end
     end
 
     private
@@ -504,8 +497,8 @@ module URI
       ret = {}
 
       # for URI::split
-      ret[:ABS_URI] = Regexp.new('\A\s*' + pattern[:X_ABS_URI] + '\s*\z', Regexp::EXTENDED)
-      ret[:REL_URI] = Regexp.new('\A\s*' + pattern[:X_REL_URI] + '\s*\z', Regexp::EXTENDED)
+      ret[:ABS_URI] = Regexp.new('\A\s*+' + pattern[:X_ABS_URI] + '\s*\z', Regexp::EXTENDED)
+      ret[:REL_URI] = Regexp.new('\A\s*+' + pattern[:X_REL_URI] + '\s*\z', Regexp::EXTENDED)
 
       # for URI::extract
       ret[:URI_REF]     = Regexp.new(pattern[:URI_REF])
@@ -543,4 +536,11 @@ module URI
     end
 
   end # class Parser
+
+  # Backward compatibility for URI::REGEXP::PATTERN::*
+  RFC2396_Parser.new.pattern.each_pair do |sym, str|
+    unless RFC2396_REGEXP::PATTERN.const_defined?(sym, false)
+      RFC2396_REGEXP::PATTERN.const_set(sym, str)
+    end
+  end
 end # module URI

@@ -1,5 +1,5 @@
 # frozen_string_literal: true
-require File.expand_path '../xref_test_case', __FILE__
+require_relative 'xref_test_case'
 
 class TestRDocStore < XrefTestCase
 
@@ -161,9 +161,10 @@ class TestRDocStore < XrefTestCase
 
   def test_all_classes_and_modules
     expected = %w[
-      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1 C9 C9::A C9::B
+      C1 C10 C10::C11 C11 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1 C9 C9::A C9::B
       Child
       M1 M1::M2
+      Object
       Parent
     ]
 
@@ -212,8 +213,9 @@ class TestRDocStore < XrefTestCase
 
   def test_classes
     expected = %w[
-      C1 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1 C9 C9::A C9::B
+      C1 C10 C10::C11 C11 C2 C2::C3 C2::C3::H1 C3 C3::H1 C3::H2 C4 C4::C4 C5 C5::C1 C6 C7 C8 C8::S1 C9 C9::A C9::B
       Child
+      Object
       Parent
     ]
 
@@ -279,6 +281,26 @@ class TestRDocStore < XrefTestCase
     assert_nil @s.find_c_enclosure('cObject')
   end
 
+  def test_resolve_c_superclasses
+    # first parse a child that references an unknown parent
+    c_file1 = @s.add_file 'ext1.c'
+    c_file1.add_class RDoc::NormalClass, 'Child', 'cExternParent'
+
+    # then parse the parent and register the C variable name as a C enclosure
+    c_file2 = @s.add_file 'ext2.c'
+    parent = c_file2.add_class RDoc::NormalClass, 'Parent', 'rb_cObject'
+
+    @s.add_c_enclosure('cExternParent', parent)
+
+    # at this point, the child's superclass is still the name of the C variable
+    assert_equal("cExternParent", @s.classes_hash['Child'].superclass)
+
+    @s.resolve_c_superclasses
+
+    # now the ancestor tree correctly references the NormalClass objects
+    assert_equal(parent, @s.classes_hash['Child'].superclass)
+  end
+
   def test_find_class_named
     assert_equal @c1, @store.find_class_named('C1')
 
@@ -317,6 +339,8 @@ class TestRDocStore < XrefTestCase
   end
 
   def test_friendly_path
+    @orig_xdg_data_home = ENV.delete('XDG_DATA_HOME')
+
     @s.path = @tmpdir
     @s.type = nil
     assert_equal @s.path, @s.friendly_path
@@ -331,11 +355,13 @@ class TestRDocStore < XrefTestCase
     assert_equal "ruby site", @s.friendly_path
 
     @s.type = :home
-    assert_equal "~/.rdoc", @s.friendly_path
+    assert_equal File.expand_path("~/.local/share/rdoc"), @s.friendly_path
 
     @s.type = :gem
     @s.path = "#{@tmpdir}/gem_repository/doc/gem_name-1.0/ri"
     assert_equal "gem gem_name-1.0", @s.friendly_path
+  ensure
+    ENV['XDG_DATA_HOME'] = @orig_xdg_data_home
   end
 
   def test_dry_run
@@ -367,9 +393,9 @@ class TestRDocStore < XrefTestCase
     assert_equal [@mod],                s.all_modules.sort
     assert_equal [@page, @top_level],   s.all_files.sort
 
-    methods = s.all_classes_and_modules.map do |mod|
+    methods = s.all_classes_and_modules.flat_map do |mod|
       mod.method_list
-    end.flatten.sort
+    end.sort
 
     _meth_bang_alias = RDoc::AnyMethod.new nil, 'method_bang'
     _meth_bang_alias.parent = @klass
@@ -382,9 +408,9 @@ class TestRDocStore < XrefTestCase
 
     assert_equal @klass, methods.last.parent
 
-    attributes = s.all_classes_and_modules.map do |mod|
+    attributes = s.all_classes_and_modules.flat_map do |mod|
       mod.attributes
-    end.flatten.sort
+    end.sort
 
     assert_equal [@attr], attributes
 
@@ -604,6 +630,14 @@ class TestRDocStore < XrefTestCase
     assert_nil @store.page 'no such page'
 
     assert_equal page, @store.page('PAGE')
+  end
+
+  def test_page_with_extension
+    page = @store.add_file 'PAGE.txt', parser: RDoc::Parser::Simple
+
+    assert_nil @store.page 'no such page'
+
+    assert_equal page, @store.page('PAGE.txt')
   end
 
   def test_save

@@ -12,4 +12,12 @@ describe "StringScanner#check_until" do
     @s.matched.should == "a"
     @s.check_until(/test/).should == "This is a test"
   end
+
+  ruby_version_is ""..."3.4" do
+    it "raises TypeError if given a String" do
+      -> {
+        @s.check_until('T')
+      }.should raise_error(TypeError, 'wrong argument type String (expected Regexp)')
+    end
+  end
 end

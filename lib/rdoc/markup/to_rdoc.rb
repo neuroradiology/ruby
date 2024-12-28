@@ -145,11 +145,19 @@ class RDoc::Markup::ToRdoc < RDoc::Markup::Formatter
 
     case type
     when :NOTE, :LABEL then
-      bullets = Array(list_item.label).map do |label|
+      stripped_labels = Array(list_item.label).map do |label|
         attributes(label).strip
-      end.join "\n"
+      end
 
-      bullets << ":\n" unless bullets.empty?
+      bullets = case type
+      when :NOTE
+        stripped_labels.map { |b| "#{b}::" }
+      when :LABEL
+        stripped_labels.map { |b| "[#{b}]" }
+      end
+
+      bullets = bullets.join("\n")
+      bullets << "\n" unless stripped_labels.empty?
 
       @prefix = ' ' * @indent
       @indent += 2
@@ -238,6 +246,34 @@ class RDoc::Markup::ToRdoc < RDoc::Markup::Formatter
   end
 
   ##
+  # Adds +table+ to the output
+
+  def accept_table header, body, aligns
+    widths = header.zip(*body).map do |cols|
+      cols.map(&:size).max
+    end
+    aligns = aligns.map do |a|
+      case a
+      when nil, :center
+        :center
+      when :left
+        :ljust
+      when :right
+        :rjust
+      end
+    end
+    @res << header.zip(widths, aligns).map do |h, w, a|
+      h.__send__(a, w)
+    end.join("|").rstrip << "\n"
+    @res << widths.map {|w| "-" * w }.join("|") << "\n"
+    body.each do |row|
+      @res << row.zip(widths, aligns).map do |t, w, a|
+        t.__send__(a, w)
+      end.join("|").rstrip << "\n"
+    end
+  end
+
+  ##
   # Applies attribute-specific markup to +text+ using RDoc::AttributeManager
 
   def attributes text
@@ -302,33 +338,15 @@ class RDoc::Markup::ToRdoc < RDoc::Markup::Formatter
 
     text_len = 20 if text_len < 20
 
-    re = /^(.{0,#{text_len}})[ \n]/
     next_prefix = ' ' * @indent
 
     prefix = @prefix || next_prefix
     @prefix = nil
 
-    @res << prefix
-
-    while text.length > text_len
-      if text =~ re then
-        @res << $1
-        text.slice!(0, $&.length)
-      else
-        @res << text.slice!(0, text_len)
-      end
-
-      @res << "\n" << next_prefix
-    end
-
-    if text.empty? then
-      @res.pop
-      @res.pop
-    else
-      @res << text
-      @res << "\n"
+    text.scan(/\G(?:([^ \n]{#{text_len}})(?=[^ \n])|(.{1,#{text_len}})(?:[ \n]|\z))/) do
+      @res << prefix << ($1 || $2) << "\n"
+      prefix = next_prefix
     end
   end
 
 end
-

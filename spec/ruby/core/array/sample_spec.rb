@@ -3,24 +3,34 @@ require_relative 'fixtures/classes'
 
 describe "Array#sample" do
   it "samples evenly" do
-    ary = [0, 1, 2, 3]
-    3.times do |i|
-      counts = [0, 0, 0, 0]
-      4000.times do
-        counts[ary.sample(3)[i]] += 1
-      end
-      counts.each do |count|
-        (800..1200).should include(count)
-      end
-    end
+    ArraySpecs.measure_sample_fairness(4, 1, 400)
+    ArraySpecs.measure_sample_fairness(4, 2, 400)
+    ArraySpecs.measure_sample_fairness(4, 3, 400)
+    ArraySpecs.measure_sample_fairness(40, 3, 400)
+    ArraySpecs.measure_sample_fairness(40, 4, 400)
+    ArraySpecs.measure_sample_fairness(40, 8, 400)
+    ArraySpecs.measure_sample_fairness(40, 16, 400)
+    ArraySpecs.measure_sample_fairness_large_sample_size(100, 80, 4000)
   end
 
   it "returns nil for an empty Array" do
     [].sample.should be_nil
   end
 
+  it "returns nil for an empty array when called without n and a Random is given" do
+    [].sample(random: Random.new(42)).should be_nil
+  end
+
   it "returns a single value when not passed a count" do
     [4].sample.should equal(4)
+  end
+
+  it "returns a single value when not passed a count and a Random is given" do
+    [4].sample(random: Random.new(42)).should equal(4)
+  end
+
+  it "returns a single value when not passed a count and a Random class is given" do
+    [4].sample(random: Random).should equal(4)
   end
 
   it "returns an empty Array when passed zero" do
@@ -65,28 +75,11 @@ describe "Array#sample" do
   end
 
   describe "with options" do
-    it "calls #to_hash to convert the passed Object" do
-      obj = mock("array_sample")
-      obj.should_receive(:to_hash).and_return({})
-      obj.should_not_receive(:to_int)
-
-      [1, 2].sample(obj).should be_an_instance_of(Fixnum)
-    end
-
-    it "calls #to_int on the first argument and #to_hash on the second when passed Objects" do
-      count = mock("array_sample_count")
-      count.should_receive(:to_int).and_return(2)
-      options = mock("array_sample_options")
-      options.should_receive(:to_hash).and_return({})
-
-      [1, 2].sample(count, options).size.should == 2
-    end
-
     it "calls #rand on the Object passed by the :random key in the arguments Hash" do
       obj = mock("array_sample_random")
       obj.should_receive(:rand).and_return(0.5)
 
-      [1, 2].sample(random: obj).should be_an_instance_of(Fixnum)
+      [1, 2].sample(random: obj).should be_an_instance_of(Integer)
     end
 
     it "raises a NoMethodError if an object passed for the RNG does not define #rand" do
@@ -95,8 +88,8 @@ describe "Array#sample" do
       -> { [1, 2].sample(random: obj) }.should raise_error(NoMethodError)
     end
 
-    describe "when the object returned by #rand is a Fixnum" do
-      it "uses the fixnum as index" do
+    describe "when the object returned by #rand is an Integer" do
+      it "uses the integer as index" do
         random = mock("array_sample_random_ret")
         random.should_receive(:rand).and_return(0)
 
@@ -124,7 +117,7 @@ describe "Array#sample" do
     end
   end
 
-  describe "when the object returned by #rand is not a Fixnum but responds to #to_int" do
+  describe "when the object returned by #rand is not an Integer but responds to #to_int" do
     it "calls #to_int on the Object" do
       value = mock("array_sample_random_value")
       value.should_receive(:to_int).and_return(1)

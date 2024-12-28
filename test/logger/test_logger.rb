@@ -1,6 +1,6 @@
 # coding: US-ASCII
 # frozen_string_literal: false
-require_relative 'helper'
+require 'logger'
 require 'tempfile'
 
 class TestLogger < Test::Unit::TestCase
@@ -13,7 +13,7 @@ class TestLogger < Test::Unit::TestCase
   class Log
     attr_reader :label, :datetime, :pid, :severity, :progname, :msg
     def initialize(line)
-      /\A(\w+), \[([^#]*)#(\d+)\]\s+(\w+) -- (\w*): ([\x0-\xff]*)/ =~ line
+      /\A(\w+), \[([^#]*) #(\d+)\]\s+(\w+) -- (\w*): ([\x0-\xff]*)/ =~ line
       @label, @datetime, @pid, @severity, @progname, @msg = $1, $2, $3, $4, $5, $6
     end
   end
@@ -113,6 +113,15 @@ class TestLogger < Test::Unit::TestCase
     assert_raise(ArgumentError) { @logger.level = 'something_wrong' }
   end
 
+  def test_reraise_write_errors
+    c = Object.new
+    e = Class.new(StandardError)
+    c.define_singleton_method(:write){|*| raise e}
+    c.define_singleton_method(:close){}
+    logger = Logger.new(c, :reraise_write_errors=>[e])
+    assert_raise(e) { logger.warn('foo') }
+  end
+
   def test_progname
     assert_nil(@logger.progname)
     @logger.progname = "name"
@@ -124,7 +133,7 @@ class TestLogger < Test::Unit::TestCase
     dummy = STDERR
     logger = Logger.new(dummy)
     log = log_add(logger, INFO, "foo")
-    assert_match(/^\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\s*\d+ $/, log.datetime)
+    assert_match(/^\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\s*\d+$/, log.datetime)
     logger.datetime_format = "%d%b%Y@%H:%M:%S"
     log = log_add(logger, INFO, "foo")
     assert_match(/^\d\d\w\w\w\d\d\d\d@\d\d:\d\d:\d\d$/, log.datetime)
@@ -203,7 +212,7 @@ class TestLogger < Test::Unit::TestCase
     # default
     logger = Logger.new(STDERR)
     log = log_add(logger, INFO, "foo")
-    assert_match(/^\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\s*\d+ $/, log.datetime)
+    assert_match(/^\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d.\s*\d+$/, log.datetime)
     # config
     logger = Logger.new(STDERR, datetime_format: "%d%b%Y@%H:%M:%S")
     log = log_add(logger, INFO, "foo")
@@ -214,6 +223,13 @@ class TestLogger < Test::Unit::TestCase
     logger = Logger.new(STDERR)
     logger.reopen(STDOUT)
     assert_equal(STDOUT, logger.instance_variable_get(:@logdev).dev)
+  end
+
+  def test_reopen_nil_logdevice
+    logger = Logger.new(File::NULL)
+    assert_nothing_raised do
+      logger.reopen(STDOUT)
+    end
   end
 
   def test_add
@@ -377,5 +393,10 @@ class TestLogger < Test::Unit::TestCase
     #
     log = log(logger, :debug) { "msg" }
     assert_nil log.msg
+  end
+
+  def test_does_not_instantiate_log_device_for_File_NULL
+    l = Logger.new(File::NULL)
+    assert_nil(l.instance_variable_get(:@logdev))
   end
 end

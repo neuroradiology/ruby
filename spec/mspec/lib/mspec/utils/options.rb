@@ -32,6 +32,10 @@ class MSpecOptions
   # Raised if an unrecognized option is encountered.
   class ParseError < Exception; end
 
+  class << self
+    attr_accessor :latest
+  end
+
   attr_accessor :config, :banner, :width, :options
 
   def initialize(banner = "", width = 30, config = nil)
@@ -46,7 +50,7 @@ class MSpecOptions
       @extra << x
     }
 
-    yield self if block_given?
+    MSpecOptions.latest = self
   end
 
   # Registers an option. Acceptable formats for arguments are:
@@ -200,6 +204,13 @@ class MSpecOptions
        "Load FILE containing configuration options", &block)
   end
 
+  def env
+    on("--env", "KEY=VALUE", "Set environment variable") do |env|
+      key, value = env.split('=', 2)
+      ENV[key] = value
+    end
+  end
+
   def targets
     on("-t", "--target", "TARGET",
        "Implementation to run the specs, where TARGET is:") do |t|
@@ -274,6 +285,8 @@ class MSpecOptions
         config[:formatter] = SpinnerFormatter
       when 't', 'method'
         config[:formatter] = MethodFormatter
+      when 'e', 'stats'
+        config[:formatter] = StatsPerFileFormatter
       when 'y', 'yaml'
         config[:formatter] = YamlFormatter
       when 'p', 'profile'
@@ -281,7 +294,7 @@ class MSpecOptions
       when 'j', 'junit'
         config[:formatter] = JUnitFormatter
       else
-        abort "Unknown format: #{o}\n#{@parser}" unless File.exist?(o)
+        abort "Unknown format: #{o}" unless File.exist?(o)
         require File.expand_path(o)
         if Object.const_defined?(:CUSTOM_MSPEC_FORMATTER)
           config[:formatter] = CUSTOM_MSPEC_FORMATTER
@@ -300,6 +313,7 @@ class MSpecOptions
     doc "       m, summary               SummaryFormatter"
     doc "       a, *, spin               SpinnerFormatter"
     doc "       t, method                MethodFormatter"
+    doc "       e, stats                 StatsPerFileFormatter"
     doc "       y, yaml                  YamlFormatter"
     doc "       p, profile               ProfileFormatter"
     doc "       j, junit                 JUnitFormatter\n"
@@ -307,6 +321,11 @@ class MSpecOptions
     on("-o", "--output", "FILE",
        "Write formatter output to FILE") do |f|
       config[:output] = f
+    end
+
+    on("--error-output", "FILE",
+       "Write error output of failing specs to FILE, or $stderr if value is 'stderr'.") do |f|
+      config[:error_output] = f
     end
   end
 
@@ -377,7 +396,7 @@ class MSpecOptions
   def randomize
     on("-H", "--random",
        "Randomize the list of spec files") do
-      MSpec.randomize
+      MSpec.randomize = true
     end
   end
 
@@ -392,11 +411,11 @@ class MSpecOptions
     on("-V", "--verbose", "Output the name of each file processed") do
       obj = Object.new
       def obj.start
-        @width = MSpec.retrieve(:files).inject(0) { |max, f| f.size > max ? f.size : max }
+        @width = MSpec.files_array.inject(0) { |max, f| f.size > max ? f.size : max }
       end
       def obj.load
-        file = MSpec.retrieve :file
-        STDERR.print "\n#{file.ljust(@width)}"
+        file = MSpec.file
+        STDERR.print "\n#{file.ljust(@width)}\n"
       end
       MSpec.register :start, obj
       MSpec.register :load, obj
@@ -410,6 +429,10 @@ class MSpecOptions
         STDERR.print @marker
       end
       MSpec.register :load, obj
+    end
+
+    on("--print-skips", "Print skips") do
+      config[:print_skips] = true
     end
   end
 
@@ -461,15 +484,22 @@ class MSpecOptions
 
   def debug
     on("-d", "--debug",
-       "Set MSpec debugging flag for more verbose output") do
+       "Disable MSpec backtrace filtering") do
       $MSPEC_DEBUG = true
     end
   end
 
+  def launchable
+    on("--launchable-test-reports", "DIR",
+       "DIR The directory for reporting test results in Launchable JSON format") do |o|
+      require 'mspec/runner/formatters/launchable'
+      config[:launchable] = LaunchableFormatter.setDir(o)
+    end
+  end
+
   def all
-    # Generated with:
-    # puts File.read(__FILE__).scan(/def (\w+).*\n\s*on\(/)
     configure {}
+    env
     targets
     formatters
     filters
@@ -481,9 +511,11 @@ class MSpecOptions
     repeat
     verbose
     interrupt
+    timeout
     verify
     action_filters
     actions
     debug
+    launchable
   end
 end

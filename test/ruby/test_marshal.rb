@@ -1,6 +1,5 @@
 # frozen_string_literal: false
 require 'test/unit'
-require 'tempfile'
 require_relative 'marshaltestlib'
 
 class TestMarshal < Test::Unit::TestCase
@@ -8,7 +7,6 @@ class TestMarshal < Test::Unit::TestCase
 
   def setup
     @verbose = $VERBOSE
-    $VERBOSE = nil
   end
 
   def teardown
@@ -34,7 +32,7 @@ class TestMarshal < Test::Unit::TestCase
   end
 
   def test_marshal
-    a = [1, 2, 3, [4,5,"foo"], {1=>"bar"}, 2.5, fact(30)]
+    a = [1, 2, 3, 2**32, 2**64, [4,5,"foo"], {1=>"bar"}, 2.5, fact(30)]
     assert_equal a, Marshal.load(Marshal.dump(a))
 
     [[1,2,3,4], [81, 2, 118, 3146]].each { |w,x,y,z|
@@ -48,6 +46,26 @@ class TestMarshal < Test::Unit::TestCase
     }
   end
 
+  def test_marshal_integers
+    a = []
+    [-2, -1, 0, 1, 2].each do |i|
+      0.upto(65).map do |exp|
+        a << 2**exp + i
+      end
+    end
+    assert_equal a, Marshal.load(Marshal.dump(a))
+
+    a = [2**32, []]*2
+    assert_equal a, Marshal.load(Marshal.dump(a))
+
+    a = [2**32, 2**32, []]*2
+    assert_equal a, Marshal.load(Marshal.dump(a))
+  end
+
+  def test_marshal_small_bignum_backref
+    assert_equal [2**32, 2**32], Marshal.load("\x04\b[\al+\b\x00\x00\x00\x00\x01\x00@\x06")
+  end
+
   StrClone = String.clone
   def test_marshal_cloned_class
     assert_instance_of(StrClone, Marshal.load(Marshal.dump(StrClone.new("abc"))))
@@ -59,6 +77,8 @@ class TestMarshal < Test::Unit::TestCase
     TestMarshal.instance_eval { remove_const :StructOrNot }
     TestMarshal.const_set :StructOrNot, Class.new
     assert_raise(TypeError, "[ruby-dev:31709]") { Marshal.load(s) }
+  ensure
+    TestMarshal.instance_eval { remove_const :StructOrNot }
   end
 
   def test_struct_invalid_members
@@ -67,6 +87,16 @@ class TestMarshal < Test::Unit::TestCase
       Marshal.load("\004\bIc&TestMarshal::StructInvalidMembers\006:\020__members__\"\bfoo")
       TestMarshal::StructInvalidMembers.members
     }
+  ensure
+    TestMarshal.instance_eval { remove_const :StructInvalidMembers }
+  end
+
+  def test_load_range_as_struct
+    assert_raise(TypeError, 'GH-6832') do
+      # Can be obtained with:
+      #  $ ruby -e 'Range = Struct.new(:a, :b, :c); p Marshal.dump(Range.new(nil, nil, nil))'
+      Marshal.load("\x04\bS:\nRange\b:\x06a0:\x06b0:\x06c0")
+    end
   end
 
   class C
@@ -157,20 +187,29 @@ class TestMarshal < Test::Unit::TestCase
   end
 
   def test_change_class_name
+    self.class.__send__(:remove_const, :C3) if self.class.const_defined?(:C3)
     eval("class C3; def _dump(s); 'foo'; end; end")
     m = Marshal.dump(C3.new)
     assert_raise(TypeError) { Marshal.load(m) }
+    self.class.__send__(:remove_const, :C3)
     eval("C3 = nil")
     assert_raise(TypeError) { Marshal.load(m) }
+  ensure
+    self.class.__send__(:remove_const, :C3) if self.class.const_defined?(:C3)
   end
 
   def test_change_struct
+    self.class.__send__(:remove_const, :C3) if self.class.const_defined?(:C3)
     eval("C3 = Struct.new(:foo, :bar)")
     m = Marshal.dump(C3.new("FOO", "BAR"))
+    self.class.__send__(:remove_const, :C3)
     eval("C3 = Struct.new(:foo)")
     assert_raise(TypeError) { Marshal.load(m) }
+    self.class.__send__(:remove_const, :C3)
     eval("C3 = Struct.new(:foo, :baz)")
     assert_raise(TypeError) { Marshal.load(m) }
+  ensure
+    self.class.__send__(:remove_const, :C3) if self.class.const_defined?(:C3)
   end
 
   class C4
@@ -274,11 +313,10 @@ class TestMarshal < Test::Unit::TestCase
     assert_equal(c, Marshal.load(Marshal.dump(c)), bug2109)
 
     assert_nothing_raised(ArgumentError, '[ruby-dev:40386]') do
-      re = Tempfile.create("marshal_regexp") do |f|
-        f.binmode.write("\x04\bI/\x00\x00\x06:\rencoding\"\rUS-ASCII")
-        f.rewind
-        re2 = Marshal.load(f)
-        re2
+      re = IO.pipe do |r, w|
+        w.write("\x04\bI/\x00\x00\x06:\rencoding\"\rUS-ASCII")
+        # Marshal.load would not overread and block
+        Marshal.load(r)
       end
       assert_equal(//, re)
     end
@@ -532,17 +570,23 @@ class TestMarshal < Test::Unit::TestCase
   def test_class_ivar
     assert_raise(TypeError) {Marshal.load("\x04\x08Ic\x1bTestMarshal::TestClass\x06:\x0e@ivar_bug\"\x08bug")}
     assert_raise(TypeError) {Marshal.load("\x04\x08IM\x1bTestMarshal::TestClass\x06:\x0e@ivar_bug\"\x08bug")}
-    assert_not_operator(TestClass, :instance_variable_defined?, :@bug)
+    assert_not_operator(TestClass, :instance_variable_defined?, :@ivar_bug)
+
+    assert_raise(TypeError) {Marshal.load("\x04\x08[\x07c\x1bTestMarshal::TestClassI@\x06\x06:\x0e@ivar_bug\"\x08bug")}
+    assert_not_operator(TestClass, :instance_variable_defined?, :@ivar_bug)
   end
 
   def test_module_ivar
     assert_raise(TypeError) {Marshal.load("\x04\x08Im\x1cTestMarshal::TestModule\x06:\x0e@ivar_bug\"\x08bug")}
     assert_raise(TypeError) {Marshal.load("\x04\x08IM\x1cTestMarshal::TestModule\x06:\x0e@ivar_bug\"\x08bug")}
-    assert_not_operator(TestModule, :instance_variable_defined?, :@bug)
+    assert_not_operator(TestModule, :instance_variable_defined?, :@ivar_bug)
+
+    assert_raise(TypeError) {Marshal.load("\x04\x08[\x07m\x1cTestMarshal::TestModuleI@\x06\x06:\x0e@ivar_bug\"\x08bug")}
+    assert_not_operator(TestModule, :instance_variable_defined?, :@ivar_bug)
   end
 
   class TestForRespondToFalse
-    def respond_to?(a)
+    def respond_to?(a, priv = false)
       false
     end
   end
@@ -570,7 +614,9 @@ class TestMarshal < Test::Unit::TestCase
   end
 
   def test_continuation
-    require "continuation"
+    EnvUtil.suppress_warning {require "continuation"}
+    omit 'requires callcc support' unless respond_to?(:callcc)
+
     c = Bug9523.new
     assert_raise_with_message(RuntimeError, /Marshal\.dump reentered at marshal_dump/) do
       Marshal.dump(c)
@@ -596,7 +642,8 @@ class TestMarshal < Test::Unit::TestCase
   end
 
   def test_unloadable_data
-    c = eval("class Unloadable\u{23F0 23F3}<Time;;self;end")
+    name = "Unloadable\u{23F0 23F3}"
+    c = eval("class #{name} < Time;;self;end")
     c.class_eval {
       alias _dump_data _dump
       undef _dump
@@ -605,10 +652,16 @@ class TestMarshal < Test::Unit::TestCase
     assert_raise_with_message(TypeError, /Unloadable\u{23F0 23F3}/) {
       Marshal.load(d)
     }
+
+    # cleanup
+    self.class.class_eval do
+      remove_const name
+    end
   end
 
   def test_unloadable_userdef
-    c = eval("class Userdef\u{23F0 23F3}<Time;self;end")
+    name = "Userdef\u{23F0 23F3}"
+    c = eval("class #{name} < Time;self;end")
     class << c
       undef _load
     end
@@ -616,6 +669,11 @@ class TestMarshal < Test::Unit::TestCase
     assert_raise_with_message(TypeError, /Userdef\u{23F0 23F3}/) {
       Marshal.load(d)
     }
+
+    # cleanup
+    self.class.class_eval do
+      remove_const name
+    end
   end
 
   def test_unloadable_usrmarshal
@@ -631,15 +689,16 @@ class TestMarshal < Test::Unit::TestCase
 
   def test_no_internal_ids
     opt = %w[--disable=gems]
-    args = [opt, 'Marshal.dump("",STDOUT)', true, true, encoding: Encoding::ASCII_8BIT]
-    out, err, status = EnvUtil.invoke_ruby(*args)
+    args = [opt, 'Marshal.dump("",STDOUT)', true, true]
+    kw = {encoding: Encoding::ASCII_8BIT}
+    out, err, status = EnvUtil.invoke_ruby(*args, **kw)
     assert_empty(err)
     assert_predicate(status, :success?)
     expected = out
 
     opt << "--enable=frozen-string-literal"
     opt << "--debug=frozen-string-literal"
-    out, err, status = EnvUtil.invoke_ruby(*args)
+    out, err, status = EnvUtil.invoke_ruby(*args, **kw)
     assert_empty(err)
     assert_predicate(status, :success?)
     assert_equal(expected, out)
@@ -649,6 +708,23 @@ class TestMarshal < Test::Unit::TestCase
     str = 'x' # for link
     obj = [str, str]
     assert_equal(['X', 'X'], Marshal.load(Marshal.dump(obj), ->(v) { v == str ? v.upcase : v }))
+  end
+
+  def test_marshal_proc_string_encoding
+    string = "foo"
+    payload = Marshal.dump(string)
+    Marshal.load(payload, ->(v) {
+      if v.is_a?(String)
+        assert_equal(string, v)
+        assert_equal(string.encoding, v.encoding)
+      end
+      v
+    })
+  end
+
+  def test_marshal_proc_freeze
+    object = { foo: [42, "bar"] }
+    assert_equal object, Marshal.load(Marshal.dump(object), :freeze.to_proc)
   end
 
   def test_marshal_load_extended_class_crash
@@ -751,6 +827,138 @@ class TestMarshal < Test::Unit::TestCase
     obj.baz = :Bug15968
     assert_raise_with_message(RuntimeError, /instance variable removed/) do
       Marshal.dump(obj)
+    end
+  end
+
+  ruby2_keywords def ruby2_keywords_hash(*a)
+    a.last
+  end
+
+  def ruby2_keywords_test(key: 1)
+    key
+  end
+
+  def test_marshal_with_ruby2_keywords_hash
+    flagged_hash = ruby2_keywords_hash(key: 42)
+    data = Marshal.dump(flagged_hash)
+    hash = Marshal.load(data)
+    assert_equal(42, ruby2_keywords_test(*[hash]))
+
+    hash2 = Marshal.load(data.sub(/\x06K(?=T\z)/, "\x08KEY"))
+    assert_raise(ArgumentError, /\(given 1, expected 0\)/) {
+      ruby2_keywords_test(*[hash2])
+    }
+    hash2 = Marshal.load(data.sub(/:\x06K(?=T\z)/, "I\\&\x06:\x0dencoding\"\x0aUTF-7"))
+    assert_raise(ArgumentError, /\(given 1, expected 0\)/) {
+      ruby2_keywords_test(*[hash2])
+    }
+  end
+
+  def test_invalid_byte_sequence_symbol
+    data = Marshal.dump(:K)
+    data = data.sub(/:\x06K/, "I\\&\x06:\x0dencoding\"\x0dUTF-16LE")
+    assert_raise(ArgumentError, /UTF-16LE: "\\x4B"/) {
+      Marshal.load(data)
+    }
+  end
+
+  def exception_test
+    raise
+  end
+
+  def test_marshal_exception
+    begin
+      exception_test
+    rescue => e
+      e2 = Marshal.load(Marshal.dump(e))
+      assert_equal(e.message, e2.message)
+      assert_equal(e.backtrace, e2.backtrace)
+      assert_nil(e2.backtrace_locations) # temporal
+    end
+  end
+
+  def nameerror_test
+    unknown_method
+  end
+
+  def test_marshal_nameerror
+    begin
+      nameerror_test
+    rescue NameError => e
+      e2 = Marshal.load(Marshal.dump(e))
+      assert_equal(e.message.lines.first.chomp, e2.message.lines.first)
+      assert_equal(e.name, e2.name)
+      assert_equal(e.backtrace, e2.backtrace)
+      assert_nil(e2.backtrace_locations) # temporal
+    end
+  end
+
+  class TestMarshalFreezeProc < Test::Unit::TestCase
+    include MarshalTestLib
+
+    def encode(o)
+      Marshal.dump(o)
+    end
+
+    def decode(s)
+      Marshal.load(s, :freeze.to_proc)
+    end
+  end
+
+  def _test_hash_compared_by_identity(h)
+    h.compare_by_identity
+    h["a" + "0"] = 1
+    h["a" + "0"] = 2
+    h = Marshal.load(Marshal.dump(h))
+    assert_predicate(h, :compare_by_identity?)
+    a = h.to_a
+    assert_equal([["a0", 1], ["a0", 2]], a.sort)
+    assert_not_same(a[1][0], a[0][0])
+  end
+
+  def test_hash_compared_by_identity
+    _test_hash_compared_by_identity(Hash.new)
+  end
+
+  def test_hash_default_compared_by_identity
+    _test_hash_compared_by_identity(Hash.new(true))
+  end
+
+  class TestMarshalFreeze < Test::Unit::TestCase
+    include MarshalTestLib
+
+    def encode(o)
+      Marshal.dump(o)
+    end
+
+    def decode(s)
+      Marshal.load(s, freeze: true)
+    end
+
+    def test_return_objects_are_frozen
+      source = ["foo", {}, /foo/, 1..2]
+      objects = decode(encode(source))
+      assert_equal source, objects
+      assert_predicate objects, :frozen?
+      objects.each do |obj|
+        assert_predicate obj, :frozen?
+      end
+    end
+
+    def test_proc_returned_object_are_not_frozen
+      source = ["foo", {}, /foo/, 1..2]
+      objects = Marshal.load(encode(source), ->(o) { o.dup }, freeze: true)
+      assert_equal source, objects
+      refute_predicate objects, :frozen?
+      objects.each do |obj|
+        refute_predicate obj, :frozen?
+      end
+    end
+
+    def test_modules_and_classes_are_not_frozen
+      _objects = Marshal.load(encode([Object, Kernel]), freeze: true)
+      refute_predicate Object, :frozen?
+      refute_predicate Kernel, :frozen?
     end
   end
 end

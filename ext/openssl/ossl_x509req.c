@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -27,8 +27,8 @@
 /*
  * Classes
  */
-VALUE cX509Req;
-VALUE eX509ReqError;
+static VALUE cX509Req;
+static VALUE eX509ReqError;
 
 static void
 ossl_x509req_free(void *ptr)
@@ -41,7 +41,7 @@ static const rb_data_type_t ossl_x509req_type = {
     {
 	0, ossl_x509req_free,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY,
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
 };
 
 /*
@@ -79,23 +79,26 @@ static VALUE
 ossl_x509req_initialize(int argc, VALUE *argv, VALUE self)
 {
     BIO *in;
-    X509_REQ *req, *x = DATA_PTR(self);
+    X509_REQ *req, *req_orig = RTYPEDDATA_DATA(self);
     VALUE arg;
 
+    rb_check_frozen(self);
     if (rb_scan_args(argc, argv, "01", &arg) == 0) {
 	return self;
     }
     arg = ossl_to_der_if_possible(arg);
     in = ossl_obj2bio(&arg);
-    req = PEM_read_bio_X509_REQ(in, &x, NULL, NULL);
-    DATA_PTR(self) = x;
+    req = d2i_X509_REQ_bio(in, NULL);
     if (!req) {
-	OSSL_BIO_reset(in);
-	req = d2i_X509_REQ_bio(in, &x);
-	DATA_PTR(self) = x;
+        OSSL_BIO_reset(in);
+        req = PEM_read_bio_X509_REQ(in, NULL, NULL, NULL);
     }
     BIO_free(in);
-    if (!req) ossl_raise(eX509ReqError, NULL);
+    if (!req)
+        ossl_raise(eX509ReqError, "PEM_read_bio_X509_REQ");
+
+    RTYPEDDATA_DATA(self) = req;
+    X509_REQ_free(req_orig);
 
     return self;
 }
@@ -309,7 +312,11 @@ ossl_x509req_sign(VALUE self, VALUE key, VALUE digest)
 
     GetX509Req(self, req);
     pkey = GetPrivPKeyPtr(key); /* NO NEED TO DUP */
-    md = ossl_evp_get_digestbyname(digest);
+    if (NIL_P(digest)) {
+        md = NULL; /* needed for some key types, e.g. Ed25519 */
+    } else {
+        md = ossl_evp_get_digestbyname(digest);
+    }
     if (!X509_REQ_sign(req, pkey, md)) {
 	ossl_raise(eX509ReqError, NULL);
     }
@@ -377,13 +384,13 @@ ossl_x509req_set_attributes(VALUE self, VALUE ary)
 	OSSL_Check_Kind(RARRAY_AREF(ary, i), cX509Attr);
     }
     GetX509Req(self, req);
-    while ((attr = X509_REQ_delete_attr(req, 0)))
-	X509_ATTRIBUTE_free(attr);
+    for (i = X509_REQ_get_attr_count(req); i > 0; i--)
+        X509_ATTRIBUTE_free(X509_REQ_delete_attr(req, 0));
     for (i=0;i<RARRAY_LEN(ary); i++) {
 	item = RARRAY_AREF(ary, i);
 	attr = GetX509AttrPtr(item);
 	if (!X509_REQ_add1_attr(req, attr)) {
-	    ossl_raise(eX509ReqError, NULL);
+	    ossl_raise(eX509ReqError, "X509_REQ_add1_attr");
 	}
     }
     return ary;

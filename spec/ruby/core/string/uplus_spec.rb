@@ -1,3 +1,4 @@
+# frozen_string_literal: false
 require_relative '../../spec_helper'
 
 describe 'String#+@' do
@@ -5,8 +6,11 @@ describe 'String#+@' do
     input  = 'foo'.freeze
     output = +input
 
-    output.frozen?.should == false
+    output.should_not.frozen?
     output.should == 'foo'
+
+    output << 'bar'
+    output.should == 'foobar'
   end
 
   it 'returns self if the String is not frozen' do

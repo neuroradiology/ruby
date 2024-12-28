@@ -1,27 +1,24 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 #
 #   irb/completion.rb -
-#   	$Release Version: 0.9$
-#   	$Revision$
 #   	by Keiju ISHITSUKA(keiju@ishitsuka.com)
 #       From Original Idea of shugo@ruby-lang.org
 #
 
-require "readline"
-autoload :RDoc, "rdoc"
+require_relative 'ruby-lex'
 
 module IRB
-  module InputCompletor # :nodoc:
-
+  class BaseCompletor # :nodoc:
 
     # Set of reserved words used by Ruby, you should not use these for
     # constants or variables
     ReservedWords = %w[
+      __ENCODING__ __LINE__ __FILE__
       BEGIN END
       alias and
       begin break
       case class
-      def defined do
+      def defined? do
       else elsif end ensure
       false for
       if in
@@ -36,121 +33,319 @@ module IRB
       yield
     ]
 
-    BASIC_WORD_BREAK_CHARACTERS = " \t\n`><=;|&{("
+    HELP_COMMAND_PREPOSING = /\Ahelp\s+/
 
-    CompletionProc = proc { |input|
-      retrieve_completion_data(input).compact.map{ |i| i.encode(Encoding.default_external) }
+    def completion_candidates(preposing, target, postposing, bind:)
+      raise NotImplementedError
+    end
+
+    def doc_namespace(preposing, matched, postposing, bind:)
+      raise NotImplementedError
+    end
+
+    GEM_PATHS =
+      if defined?(Gem::Specification)
+        Gem::Specification.latest_specs(true).map { |s|
+          s.require_paths.map { |p|
+            if File.absolute_path?(p)
+              p
+            else
+              File.join(s.full_gem_path, p)
+            end
+          }
+        }.flatten
+      else
+        []
+      end.freeze
+
+    def retrieve_gem_and_system_load_path
+      candidates = (GEM_PATHS | $LOAD_PATH)
+      candidates.map do |p|
+        if p.respond_to?(:to_path)
+          p.to_path
+        else
+          String(p) rescue nil
+        end
+      end.compact.sort
+    end
+
+    def retrieve_files_to_require_from_load_path
+      @files_from_load_path ||=
+        (
+          shortest = []
+          rest = retrieve_gem_and_system_load_path.each_with_object([]) { |path, result|
+            begin
+              names = Dir.glob("**/*.{rb,#{RbConfig::CONFIG['DLEXT']}}", base: path)
+            rescue Errno::ENOENT
+              nil
+            end
+            next if names.empty?
+            names.map! { |n| n.sub(/\.(rb|#{RbConfig::CONFIG['DLEXT']})\z/, '') }.sort!
+            shortest << names.shift
+            result.concat(names)
+          }
+          shortest.sort! | rest
+        )
+    end
+
+    def command_candidates(target)
+      if !target.empty?
+        IRB::Command.command_names.select { _1.start_with?(target) }
+      else
+        []
+      end
+    end
+
+    def retrieve_files_to_require_relative_from_current_dir
+      @files_from_current_dir ||= Dir.glob("**/*.{rb,#{RbConfig::CONFIG['DLEXT']}}", base: '.').map { |path|
+        path.sub(/\.(rb|#{RbConfig::CONFIG['DLEXT']})\z/, '')
+      }
+    end
+  end
+
+  class TypeCompletor < BaseCompletor # :nodoc:
+    def initialize(context)
+      @context = context
+    end
+
+    def inspect
+      ReplTypeCompletor.info
+    end
+
+    def completion_candidates(preposing, target, _postposing, bind:)
+      # When completing the argument of `help` command, only commands should be candidates
+      return command_candidates(target) if preposing.match?(HELP_COMMAND_PREPOSING)
+
+      commands = if preposing.empty?
+        command_candidates(target)
+      # It doesn't make sense to propose commands with other preposing
+      else
+        []
+      end
+
+      result = ReplTypeCompletor.analyze(preposing + target, binding: bind, filename: @context.irb_path)
+
+      return commands unless result
+
+      commands | result.completion_candidates.map { target + _1 }
+    end
+
+    def doc_namespace(preposing, matched, _postposing, bind:)
+      result = ReplTypeCompletor.analyze(preposing + matched, binding: bind, filename: @context.irb_path)
+      result&.doc_namespace('')
+    end
+  end
+
+  class RegexpCompletor < BaseCompletor # :nodoc:
+    KERNEL_METHODS = ::Kernel.instance_method(:methods)
+    KERNEL_PRIVATE_METHODS = ::Kernel.instance_method(:private_methods)
+    KERNEL_INSTANCE_VARIABLES = ::Kernel.instance_method(:instance_variables)
+    OBJECT_CLASS_INSTANCE_METHOD = ::Object.instance_method(:class)
+    MODULE_CONSTANTS_INSTANCE_METHOD = ::Module.instance_method(:constants)
+
+    using Module.new {
+      refine ::Binding do
+        def eval_methods
+          KERNEL_METHODS.bind_call(receiver)
+        end
+
+        def eval_private_methods
+          KERNEL_PRIVATE_METHODS.bind_call(receiver)
+        end
+
+        def eval_instance_variables
+          KERNEL_INSTANCE_VARIABLES.bind_call(receiver)
+        end
+
+        def eval_global_variables
+          ::Kernel.global_variables
+        end
+
+        def eval_class_constants
+          klass = OBJECT_CLASS_INSTANCE_METHOD.bind_call(receiver)
+          MODULE_CONSTANTS_INSTANCE_METHOD.bind_call(klass)
+        end
+      end
     }
 
-    def self.retrieve_completion_data(input, bind: IRB.conf[:MAIN_CONTEXT].workspace.binding, doc_namespace: false)
+    def inspect
+      'RegexpCompletor'
+    end
+
+    def complete_require_path(target, preposing, postposing)
+      if target =~ /\A(['"])([^'"]+)\Z/
+        quote = $1
+        actual_target = $2
+      else
+        return nil # It's not String literal
+      end
+      tokens = RubyLex.ripper_lex_without_warning(preposing.gsub(/\s*\z/, ''))
+      tok = nil
+      tokens.reverse_each do |t|
+        unless [:on_lparen, :on_sp, :on_ignored_sp, :on_nl, :on_ignored_nl, :on_comment].include?(t.event)
+          tok = t
+          break
+        end
+      end
+      return unless tok&.event == :on_ident && tok.state == Ripper::EXPR_CMDARG
+
+      case tok.tok
+      when 'require'
+        retrieve_files_to_require_from_load_path.select { |path|
+          path.start_with?(actual_target)
+        }.map { |path|
+          quote + path
+        }
+      when 'require_relative'
+        retrieve_files_to_require_relative_from_current_dir.select { |path|
+          path.start_with?(actual_target)
+        }.map { |path|
+          quote + path
+        }
+      end
+    end
+
+    def completion_candidates(preposing, target, postposing, bind:)
+      if result = complete_require_path(target, preposing, postposing)
+        return result
+      end
+
+      commands = command_candidates(target)
+
+      # When completing the argument of `help` command, only commands should be candidates
+      return commands if preposing.match?(HELP_COMMAND_PREPOSING)
+
+      # It doesn't make sense to propose commands with other preposing
+      commands = [] unless preposing.empty?
+
+      completion_data = retrieve_completion_data(target, bind: bind, doc_namespace: false).compact.map{ |i| i.encode(Encoding.default_external) }
+      commands | completion_data
+    end
+
+    def doc_namespace(_preposing, matched, _postposing, bind:)
+      retrieve_completion_data(matched, bind: bind, doc_namespace: true)
+    end
+
+    def retrieve_completion_data(input, bind:, doc_namespace:)
       case input
-      when /^((["'`]).*\2)\.([^.]*)$/
+      # this regexp only matches the closing character because of irb's Reline.completer_quote_characters setting
+      # details are described in: https://github.com/ruby/irb/pull/523
+      when /^(.*["'`])\.([^.]*)$/
         # String
         receiver = $1
-        message = Regexp.quote($3)
+        message = $2
 
-        candidates = String.instance_methods.collect{|m| m.to_s}
         if doc_namespace
           "String.#{message}"
         else
+          candidates = String.instance_methods.collect{|m| m.to_s}
           select_message(receiver, message, candidates)
         end
 
-      when /^(\/[^\/]*\/)\.([^.]*)$/
+      # this regexp only matches the closing character because of irb's Reline.completer_quote_characters setting
+      # details are described in: https://github.com/ruby/irb/pull/523
+      when /^(.*\/)\.([^.]*)$/
         # Regexp
         receiver = $1
-        message = Regexp.quote($2)
+        message = $2
 
-        candidates = Regexp.instance_methods.collect{|m| m.to_s}
         if doc_namespace
           "Regexp.#{message}"
         else
+          candidates = Regexp.instance_methods.collect{|m| m.to_s}
           select_message(receiver, message, candidates)
         end
 
       when /^([^\]]*\])\.([^.]*)$/
         # Array
         receiver = $1
-        message = Regexp.quote($2)
+        message = $2
 
-        candidates = Array.instance_methods.collect{|m| m.to_s}
         if doc_namespace
           "Array.#{message}"
         else
+          candidates = Array.instance_methods.collect{|m| m.to_s}
           select_message(receiver, message, candidates)
         end
 
       when /^([^\}]*\})\.([^.]*)$/
-        # Proc or Hash
+        # Hash or Proc
         receiver = $1
-        message = Regexp.quote($2)
+        message = $2
 
-        proc_candidates = Proc.instance_methods.collect{|m| m.to_s}
-        hash_candidates = Hash.instance_methods.collect{|m| m.to_s}
         if doc_namespace
-          ["Proc.#{message}", "Hash.#{message}"]
+          ["Hash.#{message}", "Proc.#{message}"]
         else
-          select_message(receiver, message, proc_candidates | hash_candidates)
+          hash_candidates = Hash.instance_methods.collect{|m| m.to_s}
+          proc_candidates = Proc.instance_methods.collect{|m| m.to_s}
+          select_message(receiver, message, hash_candidates | proc_candidates)
         end
 
-      when /^(:[^:.]*)$/
+      when /^(:[^:.]+)$/
         # Symbol
-        return nil if doc_namespace
-        if Symbol.respond_to?(:all_symbols)
-          sym = $1
-          candidates = Symbol.all_symbols.collect{|s| ":" + s.id2name}
-          candidates.grep(/^#{Regexp.quote(sym)}/)
+        if doc_namespace
+          nil
         else
-          []
+          sym = $1
+          candidates = Symbol.all_symbols.collect do |s|
+            s.inspect
+          rescue EncodingError
+            # ignore
+          end
+          candidates.grep(/^#{Regexp.quote(sym)}/)
         end
-
-      when /^::([A-Z][^:\.\(]*)$/
+      when /^::([A-Z][^:\.\(\)]*)$/
         # Absolute Constant or class methods
         receiver = $1
+
         candidates = Object.constants.collect{|m| m.to_s}
+
         if doc_namespace
           candidates.find { |i| i == receiver }
         else
-          candidates.grep(/^#{receiver}/).collect{|e| "::" + e}
+          candidates.grep(/^#{Regexp.quote(receiver)}/).collect{|e| "::" + e}
         end
 
       when /^([A-Z].*)::([^:.]*)$/
         # Constant or class methods
         receiver = $1
-        message = Regexp.quote($2)
-        begin
-          candidates = eval("#{receiver}.constants.collect{|m| m.to_s}", bind)
-          candidates |= eval("#{receiver}.methods.collect{|m| m.to_s}", bind)
-        rescue Exception
-          candidates = []
-        end
+        message = $2
+
         if doc_namespace
           "#{receiver}::#{message}"
         else
-          select_message(receiver, message, candidates, "::")
+          begin
+            candidates = eval("#{receiver}.constants.collect{|m| m.to_s}", bind)
+            candidates |= eval("#{receiver}.methods.collect{|m| m.to_s}", bind)
+          rescue Exception
+            candidates = []
+          end
+
+          select_message(receiver, message, candidates.sort, "::")
         end
 
       when /^(:[^:.]+)(\.|::)([^.]*)$/
         # Symbol
         receiver = $1
         sep = $2
-        message = Regexp.quote($3)
+        message = $3
 
-        candidates = Symbol.instance_methods.collect{|m| m.to_s}
         if doc_namespace
           "Symbol.#{message}"
         else
+          candidates = Symbol.instance_methods.collect{|m| m.to_s}
           select_message(receiver, message, candidates, sep)
         end
 
-      when /^(?<num>-?(0[dbo])?[0-9_]+(\.[0-9_]+)?(([eE][+-]?[0-9]+)?i?|r)?)(?<sep>\.|::)(?<mes>[^.]*)$/
+      when /^(?<num>-?(?:0[dbo])?[0-9_]+(?:\.[0-9_]+)?(?:(?:[eE][+-]?[0-9]+)?i?|r)?)(?<sep>\.|::)(?<mes>[^.]*)$/
         # Numeric
         receiver = $~[:num]
         sep = $~[:sep]
-        message = Regexp.quote($~[:mes])
+        message = $~[:mes]
 
         begin
           instance = eval(receiver, bind)
+
           if doc_namespace
             "#{instance.class.name}.#{message}"
           else
@@ -161,7 +356,7 @@ module IRB
           if doc_namespace
             nil
           else
-            candidates = []
+            []
           end
         end
 
@@ -169,7 +364,7 @@ module IRB
         # Numeric(0xFFFF)
         receiver = $1
         sep = $2
-        message = Regexp.quote($3)
+        message = $3
 
         begin
           instance = eval(receiver, bind)
@@ -183,7 +378,7 @@ module IRB
           if doc_namespace
             nil
           else
-            candidates = []
+            []
           end
         end
 
@@ -191,22 +386,23 @@ module IRB
         # global var
         gvar = $1
         all_gvars = global_variables.collect{|m| m.to_s}
+
         if doc_namespace
           all_gvars.find{ |i| i == gvar }
         else
           all_gvars.grep(Regexp.new(Regexp.quote(gvar)))
         end
 
-      when /^([^."].*)(\.|::)([^.]*)$/
+      when /^([^.:"].*)(\.|::)([^.]*)$/
         # variable.func or func.func
         receiver = $1
         sep = $2
-        message = Regexp.quote($3)
+        message = $3
 
-        gv = eval("global_variables", bind).collect{|m| m.to_s}.append("true", "false", "nil")
-        lv = eval("local_variables", bind).collect{|m| m.to_s}
-        iv = eval("instance_variables", bind).collect{|m| m.to_s}
-        cv = eval("self.class.constants", bind).collect{|m| m.to_s}
+        gv = bind.eval_global_variables.collect{|m| m.to_s}.push("true", "false", "nil")
+        lv = bind.local_variables.collect{|m| m.to_s}
+        iv = bind.eval_instance_variables.collect{|m| m.to_s}
+        cv = bind.eval_class_constants.collect{|m| m.to_s}
 
         if (gv | lv | iv | cv).include?(receiver) or /^[A-Z]/ =~ receiver && /\./ !~ receiver
           # foo.func and foo is var. OR
@@ -226,16 +422,11 @@ module IRB
         else
           # func1.func2
           candidates = []
-          to_ignore = ignored_modules
-          ObjectSpace.each_object(Module){|m|
-            next if (to_ignore.include?(m) rescue true)
-            candidates.concat m.instance_methods(false).collect{|x| x.to_s}
-          }
-          candidates.sort!
-          candidates.uniq!
         end
+
         if doc_namespace
-          "#{rec.class.name}#{sep}#{candidates.find{ |i| i == message }}"
+          rec_class = rec.is_a?(Module) ? rec : rec.class
+          "#{rec_class.name}#{sep}#{candidates.find{ |i| i == message }}" rescue nil
         else
           select_message(receiver, message, candidates, sep)
         end
@@ -244,61 +435,46 @@ module IRB
         # unknown(maybe String)
 
         receiver = ""
-        message = Regexp.quote($1)
+        message = $1
 
         candidates = String.instance_methods(true).collect{|m| m.to_s}
+
         if doc_namespace
           "String.#{candidates.find{ |i| i == message }}"
         else
-          select_message(receiver, message, candidates)
+          select_message(receiver, message, candidates.sort)
         end
-
-      else
-        candidates = eval("methods | private_methods | local_variables | instance_variables | self.class.constants", bind).collect{|m| m.to_s}
-        conditions |= ReservedWords
-
+      when /^\s*$/
+        # empty input
         if doc_namespace
-          candidates.find{ |i| i == input }
+          nil
         else
-          candidates.grep(/^#{Regexp.quote(input)}/)
+          []
+        end
+      else
+        if doc_namespace
+          vars = (bind.local_variables | bind.eval_instance_variables).collect{|m| m.to_s}
+          perfect_match_var = vars.find{|m| m.to_s == input}
+          if perfect_match_var
+            eval("#{perfect_match_var}.class.name", bind) rescue nil
+          else
+            candidates = (bind.eval_methods | bind.eval_private_methods | bind.local_variables | bind.eval_instance_variables | bind.eval_class_constants).collect{|m| m.to_s}
+            candidates |= ReservedWords
+            candidates.find{ |i| i == input }
+          end
+        else
+          candidates = (bind.eval_methods | bind.eval_private_methods | bind.local_variables | bind.eval_instance_variables | bind.eval_class_constants).collect{|m| m.to_s}
+          candidates |= ReservedWords
+          candidates.grep(/^#{Regexp.quote(input)}/).sort
         end
       end
     end
 
-    PerfectMatchedProc = ->(matched) {
-      RDocRIDriver ||= RDoc::RI::Driver.new
-      if matched =~ /\A(?:::)?RubyVM/ and not ENV['RUBY_YES_I_AM_NOT_A_NORMAL_USER']
-        File.open(File.join(__dir__, 'ruby_logo.aa')) do |f|
-          RDocRIDriver.page do |io|
-            IO.copy_stream(f, io)
-          end
-        end
-        return
-      end
-      namespace = retrieve_completion_data(matched, doc_namespace: true)
-      return unless matched
-      if namespace.is_a?(Array)
-        out = RDoc::Markup::Document.new
-        namespace.each do |m|
-          begin
-            RDocRIDriver.add_method(out, m)
-          rescue RDoc::RI::Driver::NotFoundError
-          end
-        end
-        RDocRIDriver.display(out)
-      else
-        begin
-          RDocRIDriver.display_names([namespace])
-        rescue RDoc::RI::Driver::NotFoundError
-        end
-      end
-    }
-
     # Set of available operators in Ruby
     Operators = %w[% & * ** + - / < << <= <=> == === =~ > >= >> [] []= ^ ! != !~]
 
-    def self.select_message(receiver, message, candidates, sep = ".")
-      candidates.grep(/^#{message}/).collect do |e|
+    def select_message(receiver, message, candidates, sep = ".")
+      candidates.grep(/^#{Regexp.quote(message)}/).collect do |e|
         case e
         when /^[a-zA-Z_]/
           receiver + sep + e
@@ -308,30 +484,21 @@ module IRB
         end
       end
     end
-
-    def self.ignored_modules
-      # We could cache the result, but this is very fast already.
-      # By using this approach, we avoid Module#name calls, which are
-      # relatively slow when there are a lot of anonymous modules defined.
-      s = {}
-
-      scanner = lambda do |m|
-        next if s.include?(m) # IRB::ExtendCommandBundle::EXCB recurses.
-        s[m] = true
-        m.constants(false).each do |c|
-          value = m.const_get(c)
-          scanner.call(value) if value.is_a?(Module)
-        end
-      end
-
-      %i(IRB RubyLex).each do |sym|
-        next unless Object.const_defined?(sym)
-        scanner.call(Object.const_get(sym))
-      end
-
-      s.delete(IRB::Context) if defined?(IRB::Context)
-
-      s
-    end
   end
+
+  module InputCompletor
+    class << self
+      private def regexp_completor
+        @regexp_completor ||= RegexpCompletor.new
+      end
+
+      def retrieve_completion_data(input, bind: IRB.conf[:MAIN_CONTEXT].workspace.binding, doc_namespace: false)
+        regexp_completor.retrieve_completion_data(input, bind: bind, doc_namespace: doc_namespace)
+      end
+    end
+    CompletionProc = ->(target, preposing = nil, postposing = nil) {
+      regexp_completor.completion_candidates(preposing || '', target, postposing || '', bind: IRB.conf[:MAIN_CONTEXT].workspace.binding)
+    }
+  end
+  deprecate_constant :InputCompletor
 end

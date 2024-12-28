@@ -21,7 +21,7 @@ module Psych
     ###
     # FIXME: Syck should also support !!set as shorthand
     def test_load_from_yaml
-      loaded = Psych.load(<<-eoyml)
+      loaded = Psych.unsafe_load(<<-eoyml)
 --- !set
 foo: bar
 bar: baz
@@ -30,11 +30,11 @@ bar: baz
     end
 
     def test_loaded_class
-      assert_instance_of(Psych::Set, Psych.load(Psych.dump(@set)))
+      assert_instance_of(Psych::Set, Psych.unsafe_load(Psych.dump(@set)))
     end
 
     def test_set_shorthand
-      loaded = Psych.load(<<-eoyml)
+      loaded = Psych.unsafe_load(<<-eoyml)
 --- !!set
 foo: bar
 bar: baz
@@ -45,6 +45,13 @@ bar: baz
     def test_set_self_reference
       @set['self'] = @set
       assert_cycle(@set)
+    end
+
+    def test_stringify_names
+      @set[:symbol] = :value
+
+      assert_match(/^:symbol: :value/, Psych.dump(@set))
+      assert_match(/^symbol: :value/, Psych.dump(@set, stringify_names: true))
     end
   end
 end

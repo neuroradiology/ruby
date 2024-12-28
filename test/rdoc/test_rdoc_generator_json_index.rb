@@ -104,8 +104,20 @@ class TestRDocGeneratorJsonIndex < RDoc::TestCase
     orig_file = Pathname(File.join srcdir, 'generator/template/json_index/js/navigation.js')
     generated_file = Pathname(File.join @tmpdir, 'js/navigation.js')
 
-    # This is dirty hack on JRuby for MiniTest 4
-    assert orig_file.mtime.inspect == generated_file.mtime.inspect,
+    # The following assertion for the generated file's modified time randomly
+    # fails in a ppc64le environment.
+    # https://github.com/ruby/rdoc/issues/1048
+    if orig_file.mtime.inspect != generated_file.mtime.inspect &&
+      RUBY_PLATFORM =~ /powerpc64le/
+      pend <<~EOC
+        Unstable test in ppc64le.
+        <#{orig_file.mtime.inspect}> expected but was
+        <#{generated_file.mtime.inspect}>.
+      EOC
+    end
+
+    # This is dirty hack on JRuby
+    assert_equal orig_file.mtime.inspect, generated_file.mtime.inspect,
       '.js files should be the same timestamp of original'
 
     json = File.read 'js/search_index.js'
@@ -225,6 +237,16 @@ class TestRDocGeneratorJsonIndex < RDoc::TestCase
   end
 
   def test_generate_utf_8
+    # JRuby fails this test with:
+    #   Encoding::UndefinedConversionError: "\xC2" from ASCII-8BIT to UTF-8
+    #     org/jruby/RubyIO.java:1639:in `write'
+    #     org/jruby/RubyIO.java:1612:in `write'
+    #     json/ext/GeneratorState.java:232:in `_generate'
+    #     json/ext/GeneratorState.java:137:in `generate'
+    #     /Users/runner/work/rdoc/rdoc/vendor/bundle/jruby/3.1.0/gems/json-2.9.0-java/lib/json/common.rb:824:in `dump'
+    #     /Users/runner/work/rdoc/rdoc/lib/rdoc/generator/json_index.rb:148:in `block in generate'
+    omit if RUBY_PLATFORM =~ /java/
+
     text = "5\xB0"
     text = RDoc::Encoding.change_encoding text, Encoding::ISO_8859_1
     @klass.add_comment comment(text), @top_level

@@ -2,7 +2,7 @@
 
 require_relative "../support/silent_logger"
 
-RSpec.describe "fetching dependencies with a mirrored source", :realworld => true do
+RSpec.describe "fetching dependencies with a mirrored source", realworld: true do
   let(:mirror) { "https://server.example.org" }
   let(:original) { "http://127.0.0.1:#{@port}" }
 
@@ -17,20 +17,20 @@ RSpec.describe "fetching dependencies with a mirrored source", :realworld => tru
     @t.join
   end
 
-  it "sets the 'X-Gemfile-Source' header and bundles successfully" do
+  it "sets the 'X-Gemfile-Source' and 'User-Agent' headers and bundles successfully" do
     gemfile <<-G
       source "#{mirror}"
       gem 'weakling'
     G
 
-    bundle :install, :artifice => nil
+    bundle :install, artifice: nil
 
     expect(out).to include("Installing weakling")
     expect(out).to include("Bundle complete")
     expect(the_bundle).to include_gems "weakling 0.0.3"
   end
 
-private
+  private
 
   def setup_server
     require_rack
@@ -39,13 +39,15 @@ private
 
     require_relative "../support/artifice/endpoint_mirror_source"
 
+    require "rackup/server"
+
     @t = Thread.new do
-      Rack::Server.start(:app       => EndpointMirrorSource,
-                         :Host      => "0.0.0.0",
-                         :Port      => @port,
-                         :server    => "webrick",
-                         :AccessLog => [],
-                         :Logger    => Spec::SilentLogger.new)
+      Rackup::Server.start(app: EndpointMirrorSource,
+                           Host: "0.0.0.0",
+                           Port: @port,
+                           server: "webrick",
+                           AccessLog: [],
+                           Logger: Spec::SilentLogger.new)
     end.run
 
     wait_for_server("127.0.0.1", @port)

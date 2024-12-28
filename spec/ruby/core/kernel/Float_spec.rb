@@ -41,7 +41,7 @@ describe :kernel_float, shared: true do
   end
 
   it "converts Strings to floats without calling #to_f" do
-    string = "10"
+    string = +"10"
     string.should_not_receive(:to_f)
     @object.send(:Float, string).should == 10.0
   end
@@ -52,6 +52,12 @@ describe :kernel_float, shared: true do
 
   it "raises an ArgumentError for a String of word characters" do
     -> { @object.send(:Float, "float") }.should raise_error(ArgumentError)
+  end
+
+  it "raises an ArgumentError for a String with string in error message" do
+    -> { @object.send(:Float, "foo") }.should raise_error(ArgumentError) { |e|
+      e.message.should == 'invalid value for Float(): "foo"'
+    }
   end
 
   it "raises an ArgumentError if there are two decimal points in the String" do
@@ -300,27 +306,25 @@ describe :kernel_float, shared: true do
     -> { @object.send(:Float, c) }.should raise_error(RangeError)
   end
 
-  ruby_version_is "2.6" do
-    describe "when passed exception: false" do
-      describe "and valid input" do
-        it "returns a Float number" do
-          @object.send(:Float, 1, exception: false).should == 1.0
-          @object.send(:Float, "1", exception: false).should == 1.0
-          @object.send(:Float, "1.23", exception: false).should == 1.23
-        end
+  describe "when passed exception: false" do
+    describe "and valid input" do
+      it "returns a Float number" do
+        @object.send(:Float, 1, exception: false).should == 1.0
+        @object.send(:Float, "1", exception: false).should == 1.0
+        @object.send(:Float, "1.23", exception: false).should == 1.23
       end
+    end
 
-      describe "and invalid input" do
-        it "swallows an error" do
-          @object.send(:Float, "abc", exception: false).should == nil
-          @object.send(:Float, :sym, exception: false).should == nil
-        end
+    describe "and invalid input" do
+      it "swallows an error" do
+        @object.send(:Float, "abc", exception: false).should == nil
+        @object.send(:Float, :sym, exception: false).should == nil
       end
+    end
 
-      describe "and nil" do
-        it "swallows it" do
-          @object.send(:Float, nil, exception: false).should == nil
-        end
+    describe "and nil" do
+      it "swallows it" do
+        @object.send(:Float, nil, exception: false).should == nil
       end
     end
   end

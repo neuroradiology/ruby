@@ -53,9 +53,15 @@ monitor_ptr(VALUE monitor)
 static int
 mc_owner_p(struct rb_monitor *mc)
 {
-    return mc->owner == rb_thread_current();
+    return mc->owner == rb_fiber_current();
 }
 
+/*
+ * call-seq:
+ *   try_enter -> true or false
+ *
+ * Attempts to enter exclusive section.  Returns +false+ if lock fails.
+ */
 static VALUE
 monitor_try_enter(VALUE monitor)
 {
@@ -65,36 +71,49 @@ monitor_try_enter(VALUE monitor)
         if (!rb_mutex_trylock(mc->mutex)) {
             return Qfalse;
         }
-        RB_OBJ_WRITE(monitor, &mc->owner, rb_thread_current());
+        RB_OBJ_WRITE(monitor, &mc->owner, rb_fiber_current());
         mc->count = 0;
     }
     mc->count += 1;
     return Qtrue;
 }
 
+/*
+ * call-seq:
+ *   enter -> nil
+ *
+ * Enters exclusive section.
+ */
 static VALUE
 monitor_enter(VALUE monitor)
 {
     struct rb_monitor *mc = monitor_ptr(monitor);
     if (!mc_owner_p(mc)) {
         rb_mutex_lock(mc->mutex);
-        RB_OBJ_WRITE(monitor, &mc->owner, rb_thread_current());
+        RB_OBJ_WRITE(monitor, &mc->owner, rb_fiber_current());
         mc->count = 0;
     }
     mc->count++;
     return Qnil;
 }
 
+/* :nodoc: */
 static VALUE
 monitor_check_owner(VALUE monitor)
 {
     struct rb_monitor *mc = monitor_ptr(monitor);
     if (!mc_owner_p(mc)) {
-        rb_raise(rb_eThreadError, "current thread not owner");
+        rb_raise(rb_eThreadError, "current fiber not owner");
     }
     return Qnil;
 }
 
+/*
+ * call-seq:
+ *   exit -> nil
+ *
+ * Leaves exclusive section.
+ */
 static VALUE
 monitor_exit(VALUE monitor)
 {
@@ -102,7 +121,7 @@ monitor_exit(VALUE monitor)
 
     struct rb_monitor *mc = monitor_ptr(monitor);
 
-    if (mc->count <= 0) rb_bug("monitor_exit: count:%d\n", (int)mc->count);
+    if (mc->count <= 0) rb_bug("monitor_exit: count:%d", (int)mc->count);
     mc->count--;
 
     if (mc->count == 0) {
@@ -112,6 +131,7 @@ monitor_exit(VALUE monitor)
     return Qnil;
 }
 
+/* :nodoc: */
 static VALUE
 monitor_locked_p(VALUE monitor)
 {
@@ -119,6 +139,7 @@ monitor_locked_p(VALUE monitor)
     return rb_mutex_locked_p(mc->mutex);
 }
 
+/* :nodoc: */
 static VALUE
 monitor_owned_p(VALUE monitor)
 {
@@ -149,8 +170,8 @@ monitor_wait_for_cond_body(VALUE v)
     struct wait_for_cond_data *data = (struct wait_for_cond_data *)v;
     struct rb_monitor *mc = monitor_ptr(data->monitor);
     // cond.wait(monitor.mutex, timeout)
-    rb_funcall(data->cond, rb_intern("wait"), 2, mc->mutex, data->timeout);
-    return Qtrue;
+    VALUE signaled = rb_funcall(data->cond, rb_intern("wait"), 2, mc->mutex, data->timeout);
+    return RTEST(signaled) ? Qtrue : Qfalse;
 }
 
 static VALUE
@@ -161,11 +182,12 @@ monitor_enter_for_cond(VALUE v)
 
     struct wait_for_cond_data *data = (struct wait_for_cond_data *)v;
     struct rb_monitor *mc = monitor_ptr(data->monitor);
-    RB_OBJ_WRITE(data->monitor, &mc->owner, rb_thread_current());
+    RB_OBJ_WRITE(data->monitor, &mc->owner, rb_fiber_current());
     mc->count = NUM2LONG(data->count);
     return Qnil;
 }
 
+/* :nodoc: */
 static VALUE
 monitor_wait_for_cond(VALUE monitor, VALUE cond, VALUE timeout)
 {
@@ -193,6 +215,14 @@ monitor_sync_ensure(VALUE monitor)
     return monitor_exit(monitor);
 }
 
+/*
+ * call-seq:
+ *   synchronize { } -> result of the block
+ *
+ * Enters exclusive section and executes the block.  Leaves the exclusive
+ * section automatically when the block exits.  See example under
+ * +MonitorMixin+.
+ */
 static VALUE
 monitor_synchronize(VALUE monitor)
 {
@@ -203,6 +233,10 @@ monitor_synchronize(VALUE monitor)
 void
 Init_monitor(void)
 {
+#ifdef HAVE_RB_EXT_RACTOR_SAFE
+    rb_ext_ractor_safe(true);
+#endif
+
     VALUE rb_cMonitor = rb_define_class("Monitor", rb_cObject);
     rb_define_alloc_func(rb_cMonitor, monitor_alloc);
 
@@ -216,6 +250,6 @@ Init_monitor(void)
     rb_define_method(rb_cMonitor, "mon_check_owner", monitor_check_owner, 0);
     rb_define_method(rb_cMonitor, "mon_owned?", monitor_owned_p, 0);
 
-    /* internal methods for MonitorMixin::ConditionalVariable */
+    /* internal methods for MonitorMixin::ConditionVariable */
     rb_define_method(rb_cMonitor, "wait_for_cond", monitor_wait_for_cond, 2);
 }

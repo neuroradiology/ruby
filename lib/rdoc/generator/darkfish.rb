@@ -4,7 +4,7 @@
 require 'erb'
 require 'fileutils'
 require 'pathname'
-require 'rdoc/generator/markup'
+require_relative 'markup'
 
 ##
 # Darkfish RDoc HTML Generator
@@ -220,8 +220,8 @@ class RDoc::Generator::Darkfish
       install_rdoc_static_file @template_dir + item, "./#{item}", options
     end
 
-    @options.template_stylesheets.each do |stylesheet|
-      FileUtils.cp stylesheet, '.', options
+    unless @options.template_stylesheets.empty?
+      FileUtils.cp @options.template_stylesheets, '.', **options
     end
 
     Dir[(@template_dir + "{js,images}/**/*").to_s].each do |path|
@@ -610,7 +610,7 @@ class RDoc::Generator::Darkfish
 
     @classes = @store.all_classes_and_modules.sort
     @files   = @store.all_files.sort
-    @methods = @classes.map { |m| m.method_list }.flatten.sort
+    @methods = @classes.flat_map { |m| m.method_list }.sort
     @modsort = get_sorted_module_list @classes
   end
 
@@ -677,7 +677,6 @@ class RDoc::Generator::Darkfish
     return body if body =~ /<html/
 
     head_file = @template_dir + '_head.rhtml'
-    footer_file = @template_dir + '_footer.rhtml'
 
     <<-TEMPLATE
 <!DOCTYPE html>
@@ -687,8 +686,6 @@ class RDoc::Generator::Darkfish
 #{head_file.read}
 
 #{body}
-
-#{footer_file.read}
     TEMPLATE
   end
 
@@ -778,13 +775,54 @@ class RDoc::Generator::Darkfish
       erbout = "_erbout_#{file_var}"
     end
 
-    if RUBY_VERSION >= '2.6'
-      template = klass.new template, trim_mode: '<>', eoutvar: erbout
-    else
-      template = klass.new template, nil, '<>', erbout
-    end
+    template = klass.new template, trim_mode: '-', eoutvar: erbout
     @template_cache[file] = template
     template
   end
 
+  # Returns an excerpt of the content for usage in meta description tags
+  def excerpt(content)
+    text = case content
+    when RDoc::Comment
+      content.text
+    when RDoc::Markup::Document
+      # This case is for page files that are not markdown nor rdoc
+      # We convert them to markdown for now as it's easier to extract the text
+      formatter = RDoc::Markup::ToMarkdown.new
+      formatter.start_accepting
+      formatter.accept_document(content)
+      formatter.end_accepting
+    else
+      content
+    end
+
+    # Match from a capital letter to the first period, discarding any links, so
+    # that we don't end up matching badges in the README
+    first_paragraph_match = text.match(/[A-Z][^\.:\/]+\./)
+    return text[0...150].gsub(/\n/, " ").squeeze(" ") unless first_paragraph_match
+
+    extracted_text = first_paragraph_match[0]
+    second_paragraph = first_paragraph_match.post_match.match(/[A-Z][^\.:\/]+\./)
+    extracted_text << " " << second_paragraph[0] if second_paragraph
+
+    extracted_text[0...150].gsub(/\n/, " ").squeeze(" ")
+  end
+
+  def generate_ancestor_list(ancestors, klass)
+    return '' if ancestors.empty?
+
+    ancestor = ancestors.shift
+    content = +'<ul><li>'
+
+    if ancestor.is_a?(RDoc::NormalClass)
+      content << "<a href=\"#{klass.aref_to ancestor.path}\">#{ancestor.full_name}</a>"
+    else
+      content << ancestor.to_s
+    end
+
+    # Recursively call the method for the remaining ancestors
+    content << generate_ancestor_list(ancestors, klass)
+
+    content << '</li></ul>'
+  end
 end

@@ -1,4 +1,5 @@
 # -*- encoding: utf-8 -*-
+# frozen_string_literal: false
 require_relative '../../spec_helper'
 require_relative 'fixtures/classes'
 
@@ -6,6 +7,10 @@ describe "String#downcase" do
   it "returns a copy of self with all uppercase letters downcased" do
     "hELLO".downcase.should == "hello"
     "hello".downcase.should == "hello"
+  end
+
+  it "returns a String in the same encoding as self" do
+    "hELLO".encode("US-ASCII").downcase.encoding.should == Encoding::US_ASCII
   end
 
   describe "full Unicode case mapping" do
@@ -26,6 +31,10 @@ describe "String#downcase" do
   describe "ASCII-only case mapping" do
     it "does not downcase non-ASCII characters" do
       "CÅR".downcase(:ascii).should == "cÅr"
+    end
+
+    it "works with substrings" do
+      "prefix TÉ"[-2..-1].downcase(:ascii).should == "tÉ"
     end
   end
 
@@ -68,16 +77,8 @@ describe "String#downcase" do
     -> { "ABC".downcase(:invalid_option) }.should raise_error(ArgumentError)
   end
 
-  ruby_version_is ''...'2.7' do
-    it "taints result when self is tainted" do
-      "".taint.downcase.tainted?.should == true
-      "x".taint.downcase.tainted?.should == true
-      "X".taint.downcase.tainted?.should == true
-    end
-  end
-
-  it "returns a subclass instance for subclasses" do
-    StringSpecs::MyString.new("FOObar").downcase.should be_an_instance_of(StringSpecs::MyString)
+  it "returns a String instance for subclasses" do
+    StringSpecs::MyString.new("FOObar").downcase.should be_an_instance_of(String)
   end
 end
 
@@ -86,6 +87,12 @@ describe "String#downcase!" do
     a = "HeLlO"
     a.downcase!.should equal(a)
     a.should == "hello"
+  end
+
+  it "modifies self in place for non-ascii-compatible encodings" do
+    a = "HeLlO".encode("utf-16le")
+    a.downcase!
+    a.should == "hello".encode("utf-16le")
   end
 
   describe "full Unicode case mapping" do
@@ -111,6 +118,12 @@ describe "String#downcase!" do
       a = "CÅR"
       a.downcase!(:ascii)
       a.should == "cÅr"
+    end
+
+    it "works for non-ascii-compatible encodings" do
+      a = "ABC".encode("utf-16le")
+      a.downcase!(:ascii)
+      a.should == "abc".encode("utf-16le")
     end
   end
 
@@ -171,9 +184,9 @@ describe "String#downcase!" do
     a.should == "hello"
   end
 
-  it "raises a #{frozen_error_class} when self is frozen" do
-    -> { "HeLlo".freeze.downcase! }.should raise_error(frozen_error_class)
-    -> { "hello".freeze.downcase! }.should raise_error(frozen_error_class)
+  it "raises a FrozenError when self is frozen" do
+    -> { "HeLlo".freeze.downcase! }.should raise_error(FrozenError)
+    -> { "hello".freeze.downcase! }.should raise_error(FrozenError)
   end
 
   it "sets the result String encoding to the source String encoding" do

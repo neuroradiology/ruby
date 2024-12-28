@@ -1,4 +1,5 @@
-/*-*-c-*-*/
+#ifndef RUBY_VM_OPTS_H/*-*-c-*-*/
+#define RUBY_VM_OPTS_H
 /**********************************************************************
 
   vm_opts.h - VM optimize option
@@ -9,10 +10,6 @@
 
 **********************************************************************/
 
-
-#ifndef RUBY_VM_OPTS_H
-#define RUBY_VM_OPTS_H
-
 /* Compile options.
  * You can change these options at runtime by VM::CompileOption.
  * Following definitions are default values.
@@ -22,7 +19,7 @@
 #define OPT_PEEPHOLE_OPTIMIZATION       1
 #define OPT_SPECIALISED_INSTRUCTION     1
 #define OPT_INLINE_CONST_CACHE          1
-#define OPT_FROZEN_STRING_LITERAL       0
+#define OPT_FROZEN_STRING_LITERAL       -1
 #define OPT_DEBUG_FROZEN_STRING_LITERAL 0
 
 /* Build Options.
@@ -48,7 +45,6 @@
 #define OPT_CHECKED_RUN              1
 #define OPT_INLINE_METHOD_CACHE      1
 #define OPT_GLOBAL_METHOD_CACHE      1
-#define OPT_BLOCKINLINING            0
 
 #ifndef OPT_IC_FOR_IVAR
 #define OPT_IC_FOR_IVAR 1
@@ -58,7 +54,6 @@
 #define OPT_OPERANDS_UNIFICATION     1
 #define OPT_INSTRUCTIONS_UNIFICATION 0
 #define OPT_UNIFY_ALL_COMBINATION    0
-#define OPT_STACK_CACHING            0
 
 /* misc */
 #ifndef OPT_SUPPORT_JOKE

@@ -5,16 +5,12 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #if !defined(_OSSL_PKCS7_H_)
 #define _OSSL_PKCS7_H_
 
-extern VALUE cPKCS7;
-extern VALUE cPKCS7Signer;
-extern VALUE cPKCS7Recipient;
-extern VALUE ePKCS7Error;
-
+VALUE ossl_pkcs7_new(PKCS7 *p7);
 void Init_ossl_pkcs7(void);
 
 #endif /* _OSSL_PKCS7_H_ */

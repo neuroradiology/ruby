@@ -1,7 +1,7 @@
 /* This is a public domain general purpose hash table package
    originally written by Peter Moore @ UCB.
 
-   The hash table data strutures were redesigned and the package was
+   The hash table data structures were redesigned and the package was
    rewritten by Vladimir Makarov <vmakarov@redhat.com>.  */
 
 #ifndef RUBY_ST_H
@@ -98,6 +98,8 @@ struct st_table {
 
 enum st_retval {ST_CONTINUE, ST_STOP, ST_DELETE, ST_CHECK, ST_REPLACE};
 
+size_t rb_st_table_size(const struct st_table *tbl);
+#define st_table_size rb_st_table_size
 st_table *rb_st_init_table(const struct st_hash_type *);
 #define st_init_table rb_st_init_table
 st_table *rb_st_init_table_with_size(const struct st_hash_type *, st_index_t);

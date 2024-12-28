@@ -9,12 +9,13 @@ describe :string_unpack_basic, shared: true do
     "abc".unpack(d).should be_an_instance_of(Array)
   end
 
-  it "raises a TypeError when passed nil" do
-    -> { "abc".unpack(nil) }.should raise_error(TypeError)
-  end
-
-  it "raises a TypeError when passed an Integer" do
-    -> { "abc".unpack(1) }.should raise_error(TypeError)
+  ruby_version_is "3.3" do
+    # https://bugs.ruby-lang.org/issues/19150
+    it 'raise ArgumentError when a directive is unknown' do
+      -> { "abcdefgh".unpack("a R" + unpack_format) }.should raise_error(ArgumentError, /unknown unpack directive 'R'/)
+      -> { "abcdefgh".unpack("a 0" + unpack_format) }.should raise_error(ArgumentError, /unknown unpack directive '0'/)
+      -> { "abcdefgh".unpack("a :" + unpack_format) }.should raise_error(ArgumentError, /unknown unpack directive ':'/)
+    end
   end
 end
 

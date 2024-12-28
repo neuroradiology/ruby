@@ -54,6 +54,10 @@ platform_is_not :windows do
       File.realpath(@relative_symlink).should == @file
     end
 
+    it "removes the file element when going one level up" do
+      File.realpath('../', @file).should == @real_dir
+    end
+
     it "raises an Errno::ELOOP if the symlink points to itself" do
       File.unlink @link
       File.symlink(@link, @link)
@@ -66,6 +70,12 @@ platform_is_not :windows do
 
     it "raises Errno::ENOENT if the symlink points to an absent file" do
       -> { File.realpath(@fake_link) }.should raise_error(Errno::ENOENT)
+    end
+
+    it "converts the argument with #to_path" do
+      path = mock("path")
+      path.should_receive(:to_path).and_return(__FILE__)
+      File.realpath(path).should == File.realpath(__FILE__ )
     end
   end
 end

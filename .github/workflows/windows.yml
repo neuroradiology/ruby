@@ -1,90 +1,212 @@
 name: Windows
 on:
   push:
-    branches:
-      - master
+    paths-ignore:
+      - 'doc/**'
+      - '**/man/*'
+      - '**.md'
+      - '**.rdoc'
+      - '**/.document'
+      - '.*.yml'
   pull_request:
-    branches:
-      - '*'
+    # Do not use paths-ignore for required status checks
+    # https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks#handling-skipped-but-required-checks
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }} / ${{ startsWith(github.event_name, 'pull') && github.ref_name || github.sha }}
+  cancel-in-progress: ${{ startsWith(github.event_name, 'pull') }}
+
+permissions:
+  contents: read
+
 jobs:
   make:
     strategy:
       matrix:
-        test_task: [test]
-        os: [windows-2019]
-        vs: [2019]
+        include:
+          - vc: 2015
+            vs: 2019
+            vcvars: '10.0.14393.0 -vcvars_ver=14.0' # The oldest Windows 10 SDK w/ VC++ 2015 toolset (v140)
+            test_task: check
+          - vs: 2019
+            test_task: check
+          - vs: 2022
+            test_task: check
+          - vs: 2022
+            test_task: test-bundled-gems
       fail-fast: false
-    runs-on: ${{ matrix.os }}
-    if: "!contains(github.event.head_commit.message, '[ci skip]')"
+
+    runs-on: windows-${{ matrix.vs < 2022 && '2019' || matrix.vs }}
+
+    if: >-
+      ${{!(false
+      || contains(github.event.head_commit.message, '[DOC]')
+      || contains(github.event.head_commit.message, 'Document')
+      || contains(github.event.pull_request.title, '[DOC]')
+      || contains(github.event.pull_request.title, 'Document')
+      || contains(github.event.pull_request.labels.*.name, 'Documentation')
+      || (github.event_name == 'push' && github.event.pull_request.user.login == 'dependabot[bot]')
+      )}}
+
+    name: VisualStudio ${{ matrix.vc || matrix.vs }} (${{ matrix.test_task }})
+
+    env:
+      GITPULLOPTIONS: --no-tags origin ${{ github.ref }}
+      OS_VER: windows-${{ matrix.vs < 2022 && '2019' || matrix.vs }}
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.target || 'x64' }}-windows
+
     steps:
-      - uses: actions/cache@v1
+      - run: md build
+        working-directory:
+
+      - name: find tools
+        id: find-tools
+        run: |
+          ::- find needed tools
+          set NEEDS=
+          for %%I in (%NEEDED_TOOLS%) do if "%%~$PATH:I" == "" (
+            call set NEEDS=%%NEEDS%% %%~nI
+          ) else (
+            echo %%I: %%~$PATH:I
+          )
+          echo.needs=%NEEDS%>>%GITHUB_OUTPUT%
+          if "%NEEDS%" == "" (
+            echo [debug] All needed tools found
+          ) else (
+            echo [warning^]Needs%NEEDS%
+          )
+        env:
+          NEEDED_TOOLS: >-
+            patch.exe
+
+      - uses: msys2/setup-msys2@d40200dc2db4c351366b048a9565ad82919e1c24 # v2
+        id: setup-msys2
         with:
-          path: C:\vcpkg\downloads
-          key: ${{ runner.os }}-vcpkg-download-${{ matrix.os }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-vcpkg-download-${{ matrix.os }}-
-            ${{ runner.os }}-vcpkg-download-
+          update: true
+          install: >-
+            ${{ steps.find-tools.outputs.needs }}
+        if: ${{ steps.find-tools.outputs.needs != '' }}
+
+      - uses: ruby/setup-ruby@a6e6f86333f0a2523ece813039b8b4be04560854 # v1.190.0
+        with:
+          ruby-version: '3.0'
+          bundler: none
+          windows-toolchain: none
+
+      - name: Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - name: Install libraries with scoop
+        run: |
+          iex "& {$(irm get.scoop.sh)} -RunAsAdmin"
+          Join-Path (Resolve-Path ~).Path "scoop\shims" >> $Env:GITHUB_PATH
+        shell: pwsh
+
+      - uses: actions/checkout@d632683dd7b4114ad314bca15554477dd762a938 # v4.2.0
+        with:
+          sparse-checkout-cone-mode: false
+          sparse-checkout: /.github
+
+      - uses: ./.github/actions/setup/directories
+        with:
+          srcdir: src
+          builddir: build
+
+      - name: setup env
+        # Available Ruby versions: https://github.com/actions/runner-images/blob/main/images/windows/Windows2019-Readme.md#ruby
+        # %TEMP% is inconsistent with %TMP% and test-all expects they are consistent.
+        # https://github.com/actions/virtual-environments/issues/712#issuecomment-613004302
+        run: |
+          ::- Set up VC ${{ matrix.vc || matrix.vs }}
+          set vswhere="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "delims=;" %%I in ('%vswhere% -latest -property installationPath') do (
+            set VCVARS="%%I\VC\Auxiliary\Build\vcvars64.bat"
+          )
+          set VCVARS
+          set | C:\msys64\usr\bin\sort > old.env
+          call %VCVARS% ${{ matrix.vcvars || '' }}
+          nmake -f nul
+          set TMP=%USERPROFILE%\AppData\Local\Temp
+          set TEMP=%USERPROFILE%\AppData\Local\Temp
+          set MAKEFLAGS=l
+          set /a TEST_JOBS=(15 * %NUMBER_OF_PROCESSORS% / 10) > nul
+          set | C:\msys64\usr\bin\sort > new.env
+          C:\msys64\usr\bin\comm -13 old.env new.env >> %GITHUB_ENV%
+          del *.env
+
+      - name: baseruby version
+        run: ruby -v
+
+      - name: compiler version
+        run: cl
+
+      - name: volume info
+        run: Get-Volume
+        shell: pwsh
+
       - name: Install libraries with vcpkg
         run: |
-          vcpkg --triplet x64-windows install readline zlib
-      - uses: actions/cache@v1
-        with:
-          path: C:\Users\runneradmin\AppData\Local\Temp\chocolatey
-          key: ${{ runner.os }}-chocolatey-${{ matrix.os }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-chocolatey-${{ matrix.os }}-
-            ${{ runner.os }}-chocolatey-
-      - name: Install libraries with chocolatey
-        run: |
-          choco install --no-progress openssl winflexbison3
-      # Not using official actions/checkout because it's unstable and sometimes doesn't work for a fork.
-      - name: Checkout ruby/ruby
-        run: |
-          git clone --single-branch --shallow-since=yesterday https://github.com/ruby/ruby src
-          git -C src reset --hard ${{ github.sha }}
-        if: github.event_name == 'push'
-      - name: Checkout a pull request
-        run: |
-          git clone --single-branch --shallow-since=yesterday --branch=${{ github.event.pull_request.head.ref }} https://github.com/${{ github.event.pull_request.head.repo.full_name }} src
-          git -C src reset --hard ${{ github.event.pull_request.head.sha }}
-        if: github.event_name == 'pull_request'
-      - run: ./src/tool/actions-commit-info.sh
-        shell: bash
-        id: commit_info
-      - name: Configure
-        run: |
-          md build
-          cd build
-          call "C:\Program Files (x86)\Microsoft Visual Studio\${{ matrix.vs }}\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          ../src/win32/configure.bat --disable-install-doc --without-ext=+,dbm,gdbm --enable-bundled-libffi --with-opt-dir=C:/vcpkg/installed/x64-windows --with-openssl-dir="C:/Program Files/OpenSSL-Win64"
-        shell: cmd
-      - name: nmake
-        run: |
-          call "C:\Program Files (x86)\Microsoft Visual Studio\${{ matrix.vs }}\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          set YACC=win_bison
-          cd build
-          echo on
-          nmake up
-          nmake extract-gems
-          nmake
-        shell: cmd
-      - name: nmake test
-        run: |
-          call "C:\Program Files (x86)\Microsoft Visual Studio\${{ matrix.vs }}\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          cd build
-          nmake ${{ matrix.test_task }}
-        shell: cmd
-      - uses: k0kubun/action-slack@v2.0.0
-        with:
-          payload: |
-            {
-              "attachments": [{
-                "text": "${{ job.status }}: ${{ matrix.os }} / ${{ matrix.test_task }} <https://github.com/${{ github.repository }}/commit/${{ github.sha }}/checks|${{ steps.commit_info.outputs.COMMIT_DATE }} #${{ steps.commit_info.outputs.COMMIT_NUMBER_OF_DAY }}> " +
-                        "(<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|" + "${{ github.sha }}".substring(0, 10) + ">) " +
-                        "of ${{ github.repository }}@" + "${{ github.ref }}".split('/').reverse()[0] + " by ${{ github.event.head_commit.committer.name }}",
-                "color": "danger"
-              }]
-            }
+          vcpkg install
+        working-directory: src
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        if: failure() && github.event_name == 'push'
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+      # TODO: We should use `../src` instead of `D:/a/ruby/ruby/src`
+      - name: Configure
+        run: >-
+          ../src/win32/configure.bat --disable-install-doc
+          --with-opt-dir=D:/a/ruby/ruby/src/vcpkg_installed/%VCPKG_DEFAULT_TRIPLET%
+
+      - run: nmake prepare-vcpkg
+
+      - run: nmake incs
+
+      - run: nmake extract-extlibs
+
+      # On all other platforms, test-spec depending on extract-gems (in common.mk) is enough.
+      # But not for this Visual Studio workflow. So here we extract gems before building.
+      - run: nmake extract-gems
+
+      - run: nmake
+
+      - name: Set up Launchable
+        uses: ./.github/actions/launchable/setup
+        with:
+          os: windows-${{ matrix.vs < 2022 && '2019' || matrix.vs }}
+          launchable-token: ${{ secrets.LAUNCHABLE_TOKEN }}
+          builddir: build
+          srcdir: src
+          test-task: ${{ matrix.test_task || 'check' }}
+        continue-on-error: true
+        if: ${{ matrix.test_task != 'test-bundled-gems' }}
+
+      - run: nmake ${{ matrix.test_task || 'check' }}
+        env:
+          RUBY_TESTOPTS: -j${{ env.TEST_JOBS || 4 }}
+        timeout-minutes: 70
+
+      - uses: ./.github/actions/slack
+        with:
+          label: VS${{ matrix.vc || matrix.vs }} / ${{ matrix.test_task || 'check' }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SIMPLER_ALERTS_URL }} # ruby-lang slack: ruby/simpler-alerts-bot
+        if: ${{ failure() }}
+
+  result:
+    if: ${{ always() }}
+    name: ${{ github.workflow }} result
+    runs-on: windows-latest
+    needs: [make]
+    steps:
+      - run: exit 1
+        working-directory:
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+
+defaults:
+  run:
+    working-directory: build
+    shell: cmd

@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -30,8 +30,8 @@
 /*
  * Classes
  */
-VALUE cCipher;
-VALUE eCipherError;
+static VALUE cCipher;
+static VALUE eCipherError;
 static ID id_auth_tag_len, id_key_set;
 
 static VALUE ossl_cipher_alloc(VALUE klass);
@@ -42,7 +42,7 @@ static const rb_data_type_t ossl_cipher_type = {
     {
 	0, ossl_cipher_free,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY,
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
 };
 
 /*
@@ -104,7 +104,7 @@ ossl_cipher_alloc(VALUE klass)
  *  call-seq:
  *     Cipher.new(string) -> cipher
  *
- *  The string must be a valid cipher name like "AES-128-CBC" or "3DES".
+ *  The string must contain a valid cipher name like "aes-256-cbc".
  *
  *  A list of cipher names is available by calling OpenSSL::Cipher.ciphers.
  */
@@ -149,11 +149,11 @@ ossl_cipher_copy(VALUE self, VALUE other)
     return self;
 }
 
-static void*
-add_cipher_name_to_ary(const OBJ_NAME *name, VALUE ary)
+static void
+add_cipher_name_to_ary(const OBJ_NAME *name, void *arg)
 {
+    VALUE ary = (VALUE)arg;
     rb_ary_push(ary, rb_str_new2(name->name));
-    return NULL;
 }
 
 /*
@@ -169,7 +169,7 @@ ossl_s_ciphers(VALUE self)
 
     ary = rb_ary_new();
     OBJ_NAME_do_all_sorted(OBJ_NAME_TYPE_CIPHER_METH,
-                    (void(*)(const OBJ_NAME*,void*))add_cipher_name_to_ary,
+                    add_cipher_name_to_ary,
                     (void*)ary);
 
     return ary;
@@ -237,8 +237,7 @@ ossl_cipher_init(int argc, VALUE *argv, VALUE self, int mode)
 	ossl_raise(eCipherError, NULL);
     }
 
-    if (p_key)
-	rb_ivar_set(self, id_key_set, Qtrue);
+    rb_ivar_set(self, id_key_set, p_key ? Qtrue : Qfalse);
 
     return self;
 }
@@ -385,25 +384,39 @@ ossl_cipher_update(int argc, VALUE *argv, VALUE self)
 
     StringValue(data);
     in = (unsigned char *)RSTRING_PTR(data);
-    if ((in_len = RSTRING_LEN(data)) == 0)
-        ossl_raise(rb_eArgError, "data must not be empty");
+    in_len = RSTRING_LEN(data);
     GetCipher(self, ctx);
-    out_len = in_len+EVP_CIPHER_CTX_block_size(ctx);
-    if (out_len <= 0) {
+
+    /*
+     * As of OpenSSL 3.2, there is no reliable way to determine the required
+     * output buffer size for arbitrary cipher modes.
+     * https://github.com/openssl/openssl/issues/22628
+     *
+     * in_len+block_size is usually sufficient, but AES key wrap with padding
+     * ciphers require in_len+15 even though they have a block size of 8 bytes.
+     *
+     * Using EVP_MAX_BLOCK_LENGTH (32) as a safe upper bound for ciphers
+     * currently implemented in OpenSSL, but this can change in the future.
+     */
+    if (in_len > LONG_MAX - EVP_MAX_BLOCK_LENGTH) {
 	ossl_raise(rb_eRangeError,
 		   "data too big to make output buffer: %ld bytes", in_len);
     }
+    out_len = in_len + EVP_MAX_BLOCK_LENGTH;
 
     if (NIL_P(str)) {
         str = rb_str_new(0, out_len);
     } else {
         StringValue(str);
-        rb_str_resize(str, out_len);
+        if ((long)rb_str_capacity(str) >= out_len)
+            rb_str_modify(str);
+        else
+            rb_str_modify_expand(str, out_len - RSTRING_LEN(str));
     }
 
     if (!ossl_cipher_update_long(ctx, (unsigned char *)RSTRING_PTR(str), &out_len, in, in_len))
 	ossl_raise(eCipherError, NULL);
-    assert(out_len < RSTRING_LEN(str));
+    assert(out_len <= RSTRING_LEN(str));
     rb_str_set_len(str, out_len);
 
     return str;
@@ -444,8 +457,8 @@ ossl_cipher_final(VALUE self)
  *  call-seq:
  *     cipher.name -> string
  *
- *  Returns the name of the cipher which may differ slightly from the original
- *  name provided.
+ *  Returns the short name of the cipher which may differ slightly from the
+ *  original name provided.
  */
 static VALUE
 ossl_cipher_name(VALUE self)
@@ -815,6 +828,31 @@ ossl_cipher_block_size(VALUE self)
 }
 
 /*
+ *  call-seq:
+ *     cipher.ccm_data_len = integer -> integer
+ *
+ *  Sets the length of the plaintext / ciphertext message that will be
+ *  processed in CCM mode. Make sure to call this method after #key= and
+ *  #iv= have been set, and before #auth_data=.
+ *
+ *  Only call this method after calling Cipher#encrypt or Cipher#decrypt.
+ */
+static VALUE
+ossl_cipher_set_ccm_data_len(VALUE self, VALUE data_len)
+{
+    int in_len, out_len;
+    EVP_CIPHER_CTX *ctx;
+
+    in_len = NUM2INT(data_len);
+
+    GetCipher(self, ctx);
+    if (EVP_CipherUpdate(ctx, NULL, &out_len, NULL, in_len) != 1)
+        ossl_raise(eCipherError, NULL);
+
+    return data_len;
+}
+
+/*
  * INIT
  */
 void
@@ -850,23 +888,7 @@ Init_ossl_cipher(void)
      * individual components name, key length and mode. Either all uppercase
      * or all lowercase strings may be used, for example:
      *
-     *  cipher = OpenSSL::Cipher.new('AES-128-CBC')
-     *
-     * For each algorithm supported, there is a class defined under the
-     * Cipher class that goes by the name of the cipher, e.g. to obtain an
-     * instance of AES, you could also use
-     *
-     *   # these are equivalent
-     *   cipher = OpenSSL::Cipher::AES.new(128, :CBC)
-     *   cipher = OpenSSL::Cipher::AES.new(128, 'CBC')
-     *   cipher = OpenSSL::Cipher::AES.new('128-CBC')
-     *
-     * Finally, due to its wide-spread use, there are also extra classes
-     * defined for the different key sizes of AES
-     *
-     *   cipher = OpenSSL::Cipher::AES128.new(:CBC)
-     *   cipher = OpenSSL::Cipher::AES192.new(:CBC)
-     *   cipher = OpenSSL::Cipher::AES256.new(:CBC)
+     *  cipher = OpenSSL::Cipher.new('aes-128-cbc')
      *
      * === Choosing either encryption or decryption mode
      *
@@ -896,7 +918,7 @@ Init_ossl_cipher(void)
      * without processing the password further. A simple and secure way to
      * create a key for a particular Cipher is
      *
-     *  cipher = OpenSSL::AES256.new(:CFB)
+     *  cipher = OpenSSL::Cipher.new('aes-256-cfb')
      *  cipher.encrypt
      *  key = cipher.random_key # also sets the generated key on the Cipher
      *
@@ -964,14 +986,14 @@ Init_ossl_cipher(void)
      *
      *   data = "Very, very confidential data"
      *
-     *   cipher = OpenSSL::Cipher::AES.new(128, :CBC)
+     *   cipher = OpenSSL::Cipher.new('aes-128-cbc')
      *   cipher.encrypt
      *   key = cipher.random_key
      *   iv = cipher.random_iv
      *
      *   encrypted = cipher.update(data) + cipher.final
      *   ...
-     *   decipher = OpenSSL::Cipher::AES.new(128, :CBC)
+     *   decipher = OpenSSL::Cipher.new('aes-128-cbc')
      *   decipher.decrypt
      *   decipher.key = key
      *   decipher.iv = iv
@@ -1007,7 +1029,7 @@ Init_ossl_cipher(void)
      * not to reuse the _key_ and _nonce_ pair. Reusing an nonce ruins the
      * security guarantees of GCM mode.
      *
-     *   cipher = OpenSSL::Cipher::AES.new(128, :GCM).encrypt
+     *   cipher = OpenSSL::Cipher.new('aes-128-gcm').encrypt
      *   cipher.key = key
      *   cipher.iv = nonce
      *   cipher.auth_data = auth_data
@@ -1023,7 +1045,7 @@ Init_ossl_cipher(void)
      * ciphertext with a probability of 1/256.
      *
      *   raise "tag is truncated!" unless tag.bytesize == 16
-     *   decipher = OpenSSL::Cipher::AES.new(128, :GCM).decrypt
+     *   decipher = OpenSSL::Cipher.new('aes-128-gcm').decrypt
      *   decipher.key = key
      *   decipher.iv = nonce
      *   decipher.auth_tag = tag
@@ -1060,6 +1082,7 @@ Init_ossl_cipher(void)
     rb_define_method(cCipher, "iv_len", ossl_cipher_iv_length, 0);
     rb_define_method(cCipher, "block_size", ossl_cipher_block_size, 0);
     rb_define_method(cCipher, "padding=", ossl_cipher_set_padding, 1);
+    rb_define_method(cCipher, "ccm_data_len=", ossl_cipher_set_ccm_data_len, 1);
 
     id_auth_tag_len = rb_intern_const("auth_tag_len");
     id_key_set = rb_intern_const("key_set");

@@ -67,18 +67,18 @@ describe "English" do
 
   it "aliases $ORS to $\\" do
     original = $\
-    $\ = "\t"
+    suppress_warning {$\ = "\t"}
     $ORS.should_not be_nil
     $ORS.should == $\
-    $\ = original
+    suppress_warning {$\ = original}
   end
 
   it "aliases $OUTPUT_RECORD_SEPARATOR to $\\" do
     original = $\
-    $\ = "\t"
+    suppress_warning {$\ = "\t"}
     $OUTPUT_RECORD_SEPARATOR.should_not be_nil
     $OUTPUT_RECORD_SEPARATOR.should == $\
-    $\ = original
+    suppress_warning {$\ = original}
   end
 
   it "aliases $INPUT_LINE_NUMBER to $." do
@@ -130,13 +130,15 @@ describe "English" do
     $LAST_MATCH_INFO.should == $~
   end
 
-  it "aliases $IGNORECASE to $=" do
-    $VERBOSE, verbose = nil, $VERBOSE
-    begin
-      $IGNORECASE.should_not be_nil
-      $IGNORECASE.should == $=
-    ensure
-      $VERBOSE = verbose
+  ruby_version_is ""..."3.3" do
+    it "aliases $IGNORECASE to $=" do
+      $VERBOSE, verbose = nil, $VERBOSE
+      begin
+        $IGNORECASE.should_not be_nil
+        $IGNORECASE.should == $=
+      ensure
+        $VERBOSE = verbose
+      end
     end
   end
 

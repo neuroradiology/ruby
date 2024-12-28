@@ -1,38 +1,69 @@
 # frozen_string_literal: true
-require 'rubygems/test_case'
-require 'rdoc/rubygems_hook'
+require 'rubygems'
+require 'fileutils'
+require 'tmpdir'
+require_relative '../../lib/rdoc/rubygems_hook'
+require 'test/unit'
 
-class TestRDocRubygemsHook < Gem::TestCase
-
+class TestRDocRubyGemsHook < Test::Unit::TestCase
   def setup
-    super
-
-    @a = util_spec 'a', 2 do |s|
+    @a = Gem::Specification.new do |s|
+      s.platform    = Gem::Platform::RUBY
+      s.name        = "a"
+      s.version     = 2
       s.rdoc_options = %w[--main MyTitle]
       s.extra_rdoc_files = %w[README]
     end
+    @tempdir = File.realpath(Dir.mktmpdir("test_rubygems_hook_"))
 
-    write_file File.join(@tempdir, 'lib', 'a.rb')
-    write_file File.join(@tempdir, 'README')
+    @orig_envs = %w[
+      GEM_VENDOR
+      GEMRC
+      XDG_CACHE_HOME
+      XDG_CONFIG_HOME
+      XDG_DATA_HOME
+      SOURCE_DATE_EPOCH
+      BUNDLER_VERSION
+      HOME
+      RDOCOPT
+    ].map {|e| [e, ENV.delete(e)]}.to_h
+    ENV["HOME"] = @tempdir
 
-    install_gem @a
+    Gem.configuration = nil
 
-    @hook = RDoc::RubygemsHook.new @a
+    @a.instance_variable_set(:@doc_dir, File.join(@tempdir, "doc"))
+    @a.instance_variable_set(:@gem_dir, File.join(@tempdir, "a-2"))
+    @a.instance_variable_set(:@full_gem_path, File.join(@tempdir, "a-2"))
+    @a.loaded_from = File.join(@tempdir, 'a-2', 'a-2.gemspec')
+
+    FileUtils.mkdir_p File.join(@tempdir, 'a-2', 'lib')
+    FileUtils.touch   File.join(@tempdir, 'a-2', 'lib', 'a.rb')
+    FileUtils.touch   File.join(@tempdir, 'a-2', 'README')
+
+    @hook = RDoc::RubyGemsHook.new @a
 
     begin
-      RDoc::RubygemsHook.load_rdoc
+      RDoc::RubyGemsHook.load_rdoc
     rescue Gem::DocumentError => e
-      skip e.message
+      omit e.message
     end
+    @old_ui = Gem::DefaultUserInteraction.ui
+    Gem::DefaultUserInteraction.ui = Gem::SilentUI.new
+  end
 
-    Gem.configuration[:rdoc] = nil
+  def teardown
+    ui = Gem::DefaultUserInteraction.ui
+    Gem::DefaultUserInteraction.ui = @old_ui
+    FileUtils.rm_rf @tempdir
+    ui.close
+    ENV.update(@orig_envs)
   end
 
   def test_initialize
     refute @hook.generate_rdoc
     assert @hook.generate_ri
 
-    rdoc = RDoc::RubygemsHook.new @a, false, false
+    rdoc = RDoc::RubyGemsHook.new @a, false, false
 
     refute rdoc.generate_rdoc
     refute rdoc.generate_ri
@@ -165,8 +196,27 @@ class TestRDocRubygemsHook < Gem::TestCase
 
     @hook.generate
 
-    refute_path_exists File.join(@a.doc_dir('rdoc'), 'index.html')
-    assert_path_exists File.join(@a.doc_dir('ri'),   'cache.ri')
+    assert_path_not_exist File.join(@a.doc_dir('rdoc'), 'index.html')
+    assert_path_exist File.join(@a.doc_dir('ri'),   'cache.ri')
+  end
+
+  def test_generate_rubygems_compatible
+    original_default_gem_method = RDoc::RubygemsHook.method(:default_gem?)
+    RDoc::RubygemsHook.singleton_class.remove_method(:default_gem?)
+    RDoc::RubygemsHook.define_singleton_method(:default_gem?) { true }
+    FileUtils.mkdir_p @a.doc_dir 'ri'
+    FileUtils.mkdir_p @a.doc_dir 'rdoc'
+    FileUtils.mkdir_p File.join(@a.gem_dir, 'lib')
+
+    # rubygems/lib/rubygems/commands/rdoc_command.rb calls this
+    hook = RDoc::RubygemsHook.new @a, true, true
+    hook.force = true
+    hook.generate
+
+    assert_path_exist File.join(@a.doc_dir('rdoc'), 'index.html')
+  ensure
+    RDoc::RubygemsHook.singleton_class.remove_method(:default_gem?)
+    RDoc::RubygemsHook.define_singleton_method(:default_gem?, &original_default_gem_method)
   end
 
   def test_generate_no_overwrite
@@ -176,8 +226,8 @@ class TestRDocRubygemsHook < Gem::TestCase
 
     @hook.generate
 
-    refute_path_exists File.join(@a.doc_dir('rdoc'), 'index.html')
-    refute_path_exists File.join(@a.doc_dir('ri'),   'cache.ri')
+    assert_path_not_exist File.join(@a.doc_dir('rdoc'), 'index.html')
+    assert_path_not_exist File.join(@a.doc_dir('ri'),   'cache.ri')
   end
 
   def test_new_rdoc
@@ -201,17 +251,17 @@ class TestRDocRubygemsHook < Gem::TestCase
     refute @hook.rdoc_installed?
     refute @hook.ri_installed?
 
-    assert_path_exists @a.doc_dir
+    assert_path_exist @a.doc_dir
   end
 
   def test_remove_unwritable
-    skip 'chmod not supported' if Gem.win_platform?
-    skip "assumes that euid is not root" if Process.euid == 0
+    omit 'chmod not supported' if Gem.win_platform?
+    omit "assumes that euid is not root" if Process.euid == 0
 
     FileUtils.mkdir_p @a.base_dir
     FileUtils.chmod 0, @a.base_dir
 
-    e = assert_raises Gem::FilePermissionError do
+    e = assert_raise Gem::FilePermissionError do
       @hook.remove
     end
 
@@ -231,17 +281,17 @@ class TestRDocRubygemsHook < Gem::TestCase
   def test_setup
     @hook.setup
 
-    assert_path_exists @a.doc_dir
+    assert_path_exist @a.doc_dir
   end
 
   def test_setup_unwritable
-    skip 'chmod not supported' if Gem.win_platform?
-    skip "assumes that euid is not root" if Process.euid == 0
+    omit 'chmod not supported' if Gem.win_platform?
+    omit "assumes that euid is not root" if Process.euid == 0
 
     FileUtils.mkdir_p @a.doc_dir
     FileUtils.chmod 0, @a.doc_dir
 
-    e = assert_raises Gem::FilePermissionError do
+    e = assert_raise Gem::FilePermissionError do
       @hook.setup
     end
 

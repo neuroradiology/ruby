@@ -1,17 +1,12 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 #
 #   irb/workspace-binding.rb -
-#   	$Release Version: 0.9.6$
-#   	$Revision$
 #   	by Keiju ISHITSUKA(keiju@ruby-lang.org)
 #
-# --
-#
-#
-#
 
-require "delegate"
+require_relative "helper_method"
 
+IRB::TOPLEVEL_BINDING = binding
 module IRB # :nodoc:
   class WorkSpace
     # Creates a new workspace.
@@ -19,7 +14,7 @@ module IRB # :nodoc:
     # set self to main if specified, otherwise
     # inherit main from TOPLEVEL_BINDING.
     def initialize(*main)
-      if main[0].kind_of?(Binding)
+      if Binding === main[0]
         @binding = main.shift
       elsif IRB.conf[:SINGLE_IRB]
         @binding = TOPLEVEL_BINDING
@@ -51,11 +46,15 @@ EOF
           end
           @binding = BINDING_QUEUE.pop
 
-        when 3	# binding in function on TOPLEVEL_BINDING(default)
-          @binding = eval("self.class.send(:remove_method, :irb_binding) if defined?(irb_binding); private; def irb_binding; binding; end; irb_binding",
+        when 3	# binding in function on TOPLEVEL_BINDING
+          @binding = eval("self.class.remove_method(:irb_binding) if defined?(irb_binding); private; def irb_binding; binding; end; irb_binding",
                           TOPLEVEL_BINDING,
                           __FILE__,
                           __LINE__ - 3)
+        when 4  # binding is a copy of TOPLEVEL_BINDING (default)
+          # Note that this will typically be IRB::TOPLEVEL_BINDING
+          # This is to avoid RubyGems' local variables (see issue #17623)
+          @binding = TOPLEVEL_BINDING.dup
         end
       end
 
@@ -69,35 +68,14 @@ EOF
       unless main.empty?
         case @main
         when Module
-          @binding = eval("IRB.conf[:__MAIN__].module_eval('binding', __FILE__, __LINE__)", @binding, __FILE__, __LINE__)
+          @binding = eval("::IRB.conf[:__MAIN__].module_eval('::Kernel.binding', __FILE__, __LINE__)", @binding, __FILE__, __LINE__)
         else
           begin
-            @binding = eval("IRB.conf[:__MAIN__].instance_eval('binding', __FILE__, __LINE__)", @binding, __FILE__, __LINE__)
+            @binding = eval("::IRB.conf[:__MAIN__].instance_eval('::Kernel.binding', __FILE__, __LINE__)", @binding, __FILE__, __LINE__)
           rescue TypeError
             fail CantChangeBinding, @main.inspect
           end
         end
-      end
-
-      case @main
-      when Object
-        use_delegator = @main.frozen?
-      else
-        use_delegator = true
-      end
-
-      if use_delegator
-        @main = SimpleDelegator.new(@main)
-        IRB.conf[:__MAIN__] = @main
-        @main.singleton_class.class_eval do
-          private
-          define_method(:exit) do |*a, &b|
-            # Do nothing, will be overridden
-          end
-          define_method(:binding, Kernel.instance_method(:binding))
-          define_method(:local_variables, Kernel.instance_method(:local_variables))
-        end
-        @binding = eval("IRB.conf[:__MAIN__].instance_eval('binding', __FILE__, __LINE__)", @binding, *@binding.source_location)
       end
 
       @binding.local_variable_set(:_, nil)
@@ -109,8 +87,17 @@ EOF
     # <code>IRB.conf[:__MAIN__]</code>
     attr_reader :main
 
+    def load_helper_methods_to_main
+      # Do not load helper methods to frozen objects and BasicObject
+      return unless Object === @main && !@main.frozen?
+
+      ancestors = class<<main;ancestors;end
+      main.extend ExtendCommandBundle if !ancestors.include?(ExtendCommandBundle)
+      main.extend HelpersContainer if !ancestors.include?(HelpersContainer)
+    end
+
     # Evaluate the given +statements+ within the  context of this workspace.
-    def evaluate(context, statements, file = __FILE__, line = __LINE__)
+    def evaluate(statements, file = __FILE__, line = __LINE__)
       eval(statements, @binding, file, line)
     end
 
@@ -123,9 +110,12 @@ EOF
     end
 
     # error message manipulator
+    # WARN: Rails patches this method to filter its own backtrace. Be cautious when changing it.
+    # See: https://github.com/rails/rails/blob/main/railties/lib/rails/commands/console/console_command.rb#L8:~:text=def,filter_backtrace
     def filter_backtrace(bt)
       return nil if bt =~ /\/irb\/.*\.rb/
       return nil if bt =~ /\/irb\.rb/
+      return nil if bt =~ /tool\/lib\/.*\.rb|runner\.rb/ # for tests in Ruby repository
       case IRB.conf[:CONTEXT_MODE]
       when 1
         return nil if bt =~ %r!/tmp/irb-binding!
@@ -136,11 +126,7 @@ EOF
     end
 
     def code_around_binding
-      if @binding.respond_to?(:source_location)
-        file, pos = @binding.source_location
-      else
-        file, pos = @binding.eval('[__FILE__, __LINE__]')
-      end
+      file, pos = @binding.source_location
 
       if defined?(::SCRIPT_LINES__[file]) && lines = ::SCRIPT_LINES__[file]
         code = ::SCRIPT_LINES__[file].join('')
@@ -152,30 +138,34 @@ EOF
         end
       end
 
-      # NOT using #use_colorize? of IRB.conf[:MAIN_CONTEXT] because this method may be called before IRB::Irb#run
-      use_colorize = IRB.conf.fetch(:USE_COLORIZE, true)
-      if use_colorize
-        lines = Color.colorize_code(code).lines
-      else
-        lines = code.lines
-      end
+      lines = Color.colorize_code(code).lines
       pos -= 1
 
       start_pos = [pos - 5, 0].max
       end_pos   = [pos + 5, lines.size - 1].min
 
-      if use_colorize
-        fmt = " %2s #{Color.colorize("%#{end_pos.to_s.length}d", [:BLUE, :BOLD])}: %s"
-      else
-        fmt = " %2s %#{end_pos.to_s.length}d: %s"
-      end
+      line_number_fmt = Color.colorize("%#{end_pos.to_s.length}d", [:BLUE, :BOLD])
+      fmt = " %2s #{line_number_fmt}: %s"
+
       body = (start_pos..end_pos).map do |current_pos|
         sprintf(fmt, pos == current_pos ? '=>' : '', current_pos + 1, lines[current_pos])
       end.join("")
+
       "\nFrom: #{file} @ line #{pos + 1} :\n\n#{body}#{Color.clear}\n"
     end
+  end
 
-    def IRB.delete_caller
+  module HelpersContainer
+    class << self
+      def install_helper_methods
+        HelperMethod.helper_methods.each do |name, helper_method_class|
+          define_method name do |*args, **opts, &block|
+            helper_method_class.instance.execute(*args, **opts, &block)
+          end unless method_defined?(name)
+        end
+      end
     end
+
+    install_helper_methods
   end
 end

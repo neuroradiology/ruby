@@ -1,5 +1,4 @@
 require 'io/console'
-require 'timeout'
 require 'forwardable'
 require 'reline/version'
 require 'reline/config'
@@ -7,13 +6,36 @@ require 'reline/key_actor'
 require 'reline/key_stroke'
 require 'reline/line_editor'
 require 'reline/history'
+require 'reline/io'
+require 'reline/face'
+require 'rbconfig'
 
 module Reline
+  # NOTE: For making compatible with the rb-readline gem
   FILENAME_COMPLETION_PROC = nil
   USERNAME_COMPLETION_PROC = nil
 
-  Key = Struct.new('Key', :char, :combined_char, :with_meta)
+  class ConfigEncodingConversionError < StandardError; end
+
+  # EOF key: { char: nil, method_symbol: nil }
+  # Other key: { char: String, method_symbol: Symbol }
+  Key = Struct.new(:char, :method_symbol, :unused_boolean) do
+    # For dialog_proc `key.match?(dialog.name)`
+    def match?(sym)
+      method_symbol && method_symbol == sym
+    end
+  end
   CursorPos = Struct.new(:x, :y)
+  DialogRenderInfo = Struct.new(
+    :pos,
+    :contents,
+    :face,
+    :bg_color, # For the time being, this line should stay here for the compatibility with IRB.
+    :width,
+    :height,
+    :scrollbar,
+    keyword_init: true
+  )
 
   class Core
     ATTR_READER_NAMES = %i(
@@ -35,50 +57,64 @@ module Reline
     attr_accessor :config
     attr_accessor :key_stroke
     attr_accessor :line_editor
-    attr_accessor :ambiguous_width
     attr_accessor :last_incremental_search
     attr_reader :output
 
+    extend Forwardable
+    def_delegators :config,
+      :autocompletion,
+      :autocompletion=
+
     def initialize
       self.output = STDOUT
+      @mutex = Mutex.new
+      @dialog_proc_list = {}
       yield self
       @completion_quote_character = nil
+    end
+
+    def io_gate
+      Reline::IOGate
+    end
+
+    def encoding
+      io_gate.encoding
     end
 
     def completion_append_character=(val)
       if val.nil?
         @completion_append_character = nil
       elsif val.size == 1
-        @completion_append_character = val.encode(Encoding::default_external)
+        @completion_append_character = val.encode(encoding)
       elsif val.size > 1
-        @completion_append_character = val[0].encode(Encoding::default_external)
+        @completion_append_character = val[0].encode(encoding)
       else
         @completion_append_character = nil
       end
     end
 
     def basic_word_break_characters=(v)
-      @basic_word_break_characters = v.encode(Encoding::default_external)
+      @basic_word_break_characters = v.encode(encoding)
     end
 
     def completer_word_break_characters=(v)
-      @completer_word_break_characters = v.encode(Encoding::default_external)
+      @completer_word_break_characters = v.encode(encoding)
     end
 
     def basic_quote_characters=(v)
-      @basic_quote_characters = v.encode(Encoding::default_external)
+      @basic_quote_characters = v.encode(encoding)
     end
 
     def completer_quote_characters=(v)
-      @completer_quote_characters = v.encode(Encoding::default_external)
+      @completer_quote_characters = v.encode(encoding)
     end
 
     def filename_quote_characters=(v)
-      @filename_quote_characters = v.encode(Encoding::default_external)
+      @filename_quote_characters = v.encode(encoding)
     end
 
     def special_prefixes=(v)
-      @special_prefixes = v.encode(Encoding::default_external)
+      @special_prefixes = v.encode(encoding)
     end
 
     def completion_case_fold=(v)
@@ -94,22 +130,22 @@ module Reline
     end
 
     def completion_proc=(p)
-      raise ArgumentError unless p.respond_to?(:call)
+      raise ArgumentError unless p.respond_to?(:call) or p.nil?
       @completion_proc = p
     end
 
     def output_modifier_proc=(p)
-      raise ArgumentError unless p.respond_to?(:call)
+      raise ArgumentError unless p.respond_to?(:call) or p.nil?
       @output_modifier_proc = p
     end
 
     def prompt_proc=(p)
-      raise ArgumentError unless p.respond_to?(:call)
+      raise ArgumentError unless p.respond_to?(:call) or p.nil?
       @prompt_proc = p
     end
 
     def auto_indent_proc=(p)
-      raise ArgumentError unless p.respond_to?(:call)
+      raise ArgumentError unless p.respond_to?(:call) or p.nil?
       @auto_indent_proc = p
     end
 
@@ -118,27 +154,36 @@ module Reline
     end
 
     def dig_perfect_match_proc=(p)
-      raise ArgumentError unless p.respond_to?(:call)
+      raise ArgumentError unless p.respond_to?(:call) or p.nil?
       @dig_perfect_match_proc = p
+    end
+
+    DialogProc = Struct.new(:dialog_proc, :context)
+    def add_dialog_proc(name_sym, p, context = nil)
+      raise ArgumentError unless name_sym.instance_of?(Symbol)
+      if p.nil?
+        @dialog_proc_list.delete(name_sym)
+      else
+        raise ArgumentError unless p.respond_to?(:call)
+        @dialog_proc_list[name_sym] = DialogProc.new(p, context)
+      end
+    end
+
+    def dialog_proc(name_sym)
+      @dialog_proc_list[name_sym]
     end
 
     def input=(val)
       raise TypeError unless val.respond_to?(:getc) or val.nil?
-      if val.respond_to?(:getc)
-        if defined?(Reline::ANSI) and Reline::IOGate == Reline::ANSI
-          Reline::ANSI.input = val
-        elsif Reline::IOGate == Reline::GeneralIO
-          Reline::GeneralIO.input = val
-        end
+      if val.respond_to?(:getc) && io_gate.respond_to?(:input=)
+        io_gate.input = val
       end
     end
 
     def output=(val)
       raise TypeError unless val.respond_to?(:write) or val.nil?
       @output = val
-      if defined?(Reline::ANSI) and Reline::IOGate == Reline::ANSI
-        Reline::ANSI.output = val
-      end
+      io_gate.output = val
     end
 
     def vi_editing_mode
@@ -160,47 +205,109 @@ module Reline
     end
 
     def get_screen_size
-      Reline::IOGate.get_screen_size
+      io_gate.get_screen_size
     end
 
+    Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE = ->() {
+      # autocomplete
+      return unless config.autocompletion
+
+      journey_data = completion_journey_data
+      return unless journey_data
+
+      target = journey_data.list.first
+      completed = journey_data.list[journey_data.pointer]
+      result = journey_data.list.drop(1)
+      pointer = journey_data.pointer - 1
+      return if completed.empty? || (result == [completed] && pointer < 0)
+
+      target_width = Reline::Unicode.calculate_width(target)
+      completed_width = Reline::Unicode.calculate_width(completed)
+      if cursor_pos.x <= completed_width - target_width
+        # When target is rendered on the line above cursor position
+        x = screen_width - completed_width
+        y = -1
+      else
+        x = [cursor_pos.x - completed_width, 0].max
+        y = 0
+      end
+      cursor_pos_to_render = Reline::CursorPos.new(x, y)
+      if context and context.is_a?(Array)
+        context.clear
+        context.push(cursor_pos_to_render, result, pointer, dialog)
+      end
+      dialog.pointer = pointer
+      DialogRenderInfo.new(
+        pos: cursor_pos_to_render,
+        contents: result,
+        scrollbar: true,
+        height: [15, preferred_dialog_height].min,
+        face: :completion_dialog
+      )
+    }
+    Reline::DEFAULT_DIALOG_CONTEXT = Array.new
+
     def readmultiline(prompt = '', add_hist = false, &confirm_multiline_termination)
-      unless confirm_multiline_termination
-        raise ArgumentError.new('#readmultiline needs block to confirm multiline termination')
-      end
-      inner_readline(prompt, add_hist, true, &confirm_multiline_termination)
+      @mutex.synchronize do
+        unless confirm_multiline_termination
+          raise ArgumentError.new('#readmultiline needs block to confirm multiline termination')
+        end
 
-      whole_buffer = line_editor.whole_buffer.dup
-      whole_buffer.taint if RUBY_VERSION < '2.7'
-      if add_hist and whole_buffer and whole_buffer.chomp.size > 0
-        Reline::HISTORY << whole_buffer
-      end
+        io_gate.with_raw_input do
+          inner_readline(prompt, add_hist, true, &confirm_multiline_termination)
+        end
 
-      line_editor.reset_line if line_editor.whole_buffer.nil?
-      whole_buffer
+        whole_buffer = line_editor.whole_buffer.dup
+        whole_buffer.taint if RUBY_VERSION < '2.7'
+        if add_hist and whole_buffer and whole_buffer.chomp("\n").size > 0
+          Reline::HISTORY << whole_buffer
+        end
+
+        if line_editor.eof?
+          line_editor.reset_line
+          # Return nil if the input is aborted by C-d.
+          nil
+        else
+          whole_buffer
+        end
+      end
     end
 
     def readline(prompt = '', add_hist = false)
-      inner_readline(prompt, add_hist, false)
+      @mutex.synchronize do
+        io_gate.with_raw_input do
+          inner_readline(prompt, add_hist, false)
+        end
 
-      line = line_editor.line.dup
-      line.taint if RUBY_VERSION < '2.7'
-      if add_hist and line and line.chomp.size > 0
-        Reline::HISTORY << line.chomp
+        line = line_editor.line.dup
+        line.taint if RUBY_VERSION < '2.7'
+        if add_hist and line and line.chomp("\n").size > 0
+          Reline::HISTORY << line.chomp("\n")
+        end
+
+        line_editor.reset_line if line_editor.line.nil?
+        line
       end
-
-      line_editor.reset_line if line_editor.line.nil?
-      line
     end
 
     private def inner_readline(prompt, add_hist, multiline, &confirm_multiline_termination)
       if ENV['RELINE_STDERR_TTY']
-        $stderr.reopen(ENV['RELINE_STDERR_TTY'], 'w')
+        if io_gate.win?
+          $stderr = File.open(ENV['RELINE_STDERR_TTY'], 'a')
+        else
+          $stderr.reopen(ENV['RELINE_STDERR_TTY'], 'w')
+        end
         $stderr.sync = true
         $stderr.puts "Reline is used by #{Process.pid}"
       end
-      otio = Reline::IOGate.prep
+      unless config.test_mode or config.loaded?
+        config.read
+        io_gate.set_default_key_bindings(config)
+      end
+      otio = io_gate.prep
 
       may_req_ambiguous_char_width
+      key_stroke.encoding = encoding
       line_editor.reset(prompt)
       if multiline
         line_editor.multiline_on
@@ -210,132 +317,114 @@ module Reline
       else
         line_editor.multiline_off
       end
-      line_editor.output = output
       line_editor.completion_proc = completion_proc
       line_editor.completion_append_character = completion_append_character
       line_editor.output_modifier_proc = output_modifier_proc
       line_editor.prompt_proc = prompt_proc
       line_editor.auto_indent_proc = auto_indent_proc
       line_editor.dig_perfect_match_proc = dig_perfect_match_proc
-      line_editor.pre_input_hook = pre_input_hook
+
+      # Readline calls pre_input_hook just after printing the first prompt.
+      line_editor.print_nomultiline_prompt
+      pre_input_hook&.call
+
+      unless Reline::IOGate.dumb?
+        @dialog_proc_list.each_pair do |name_sym, d|
+          line_editor.add_dialog_proc(name_sym, d.dialog_proc, d.context)
+        end
+      end
+
+      line_editor.update_dialogs
       line_editor.rerender
 
-      unless config.test_mode
-        config.read
-        config.reset_default_key_bindings
-        Reline::IOGate::RAW_KEYSTROKE_CONFIG.each_pair do |key, func|
-          config.add_default_key_binding(key, func)
-        end
-      end
-
       begin
+        line_editor.set_signal_handlers
         loop do
           read_io(config.keyseq_timeout) { |inputs|
-            inputs.each { |c|
-              line_editor.input_key(c)
-              line_editor.rerender
-            }
+            line_editor.set_pasting_state(io_gate.in_pasting?)
+            inputs.each do |key|
+              case key.method_symbol
+              when :bracketed_paste_start
+                # io_gate is Reline::ANSI because the key :bracketed_paste_start is only assigned in Reline::ANSI
+                key = Reline::Key.new(io_gate.read_bracketed_paste, :insert_multiline_text)
+              when :quoted_insert, :ed_quoted_insert
+                key = Reline::Key.new(io_gate.read_single_char(config.keyseq_timeout), :insert_raw_char)
+              end
+              line_editor.update(key)
+            end
           }
-          break if line_editor.finished?
+          if line_editor.finished?
+            line_editor.render_finished
+            break
+          else
+            line_editor.set_pasting_state(io_gate.in_pasting?)
+            line_editor.rerender
+          end
         end
-        Reline::IOGate.move_cursor_column(0)
-      rescue StandardError => e
+        io_gate.move_cursor_column(0)
+      rescue Errno::EIO
+        # Maybe the I/O has been closed.
+      ensure
         line_editor.finalize
-        Reline::IOGate.deprep(otio)
-        raise e
+        io_gate.deprep(otio)
       end
-
-      line_editor.finalize
-      Reline::IOGate.deprep(otio)
     end
 
-    # Keystrokes of GNU Readline will timeout it with the specification of
-    # "keyseq-timeout" when waiting for the 2nd character after the 1st one.
-    # If the 2nd character comes after 1st ESC without timeout it has a
-    # meta-property of meta-key to discriminate modified key with meta-key
-    # from multibyte characters that come with 8th bit on.
-    #
-    # GNU Readline will wait for the 2nd character with "keyseq-timeout"
-    # milli-seconds but wait forever after 3rd characters.
+    # GNU Readline watis for "keyseq-timeout" milliseconds when the input is
+    # ambiguous whether it is matching or matched.
+    # If the next character does not arrive within the specified timeout, input
+    # is considered as matched.
+    # `ESC` is ambiguous because it can be a standalone ESC (matched) or part of
+    # `ESC char` or part of CSI sequence (matching).
     private def read_io(keyseq_timeout, &block)
       buffer = []
+      status = KeyStroke::MATCHING
       loop do
-        c = Reline::IOGate.getc
-        buffer << c
-        result = key_stroke.match_status(buffer)
-        case result
-        when :matched
-          expanded = key_stroke.expand(buffer).map{ |expanded_c|
-            Reline::Key.new(expanded_c, expanded_c, false)
-          }
-          block.(expanded)
-          break
-        when :matching
-          if buffer.size == 1
-            begin
-              succ_c = nil
-              Timeout.timeout(keyseq_timeout / 1000.0) {
-                succ_c = Reline::IOGate.getc
-              }
-            rescue Timeout::Error # cancel matching only when first byte
-              block.([Reline::Key.new(c, c, false)])
-              break
-            else
-              if key_stroke.match_status(buffer.dup.push(succ_c)) == :unmatched
-                if c == "\e".ord
-                  block.([Reline::Key.new(succ_c, succ_c | 0b10000000, true)])
-                else
-                  block.([Reline::Key.new(c, c, false), Reline::Key.new(succ_c, succ_c, false)])
-                end
-                break
-              else
-                Reline::IOGate.ungetc(succ_c)
-              end
-            end
-          end
-        when :unmatched
-          if buffer.size == 1 and c == "\e".ord
-            read_escaped_key(keyseq_timeout, c, block)
+        timeout = status == KeyStroke::MATCHING_MATCHED ? keyseq_timeout.fdiv(1000) : Float::INFINITY
+        c = io_gate.getc(timeout)
+        if c.nil? || c == -1
+          if status == KeyStroke::MATCHING_MATCHED
+            status = KeyStroke::MATCHED
+          elsif buffer.empty?
+            # io_gate is closed and reached EOF
+            block.call([Key.new(nil, nil, false)])
+            return
           else
-            expanded = buffer.map{ |expanded_c|
-              Reline::Key.new(expanded_c, expanded_c, false)
-            }
-            block.(expanded)
+            status = KeyStroke::UNMATCHED
           end
-          break
+        else
+          buffer << c
+          status = key_stroke.match_status(buffer)
+        end
+
+        if status == KeyStroke::MATCHED || status == KeyStroke::UNMATCHED
+          expanded, rest_bytes = key_stroke.expand(buffer)
+          rest_bytes.reverse_each { |c| io_gate.ungetc(c) }
+          block.call(expanded)
+          return
         end
       end
     end
 
-    private def read_escaped_key(keyseq_timeout, c, block)
-      begin
-        escaped_c = nil
-        Timeout.timeout(keyseq_timeout / 1000.0) {
-          escaped_c = Reline::IOGate.getc
-        }
-      rescue Timeout::Error # independent ESC
-        block.([Reline::Key.new(c, c, false)])
-      else
-        if escaped_c.nil?
-          block.([Reline::Key.new(c, c, false)])
-        elsif escaped_c >= 128 # maybe, first byte of multi byte
-          block.([Reline::Key.new(c, c, false), Reline::Key.new(escaped_c, escaped_c, false)])
-        elsif escaped_c == "\e".ord # escape twice
-          block.([Reline::Key.new(c, c, false), Reline::Key.new(c, c, false)])
-        else
-          block.([Reline::Key.new(escaped_c, escaped_c | 0b10000000, true)])
-        end
-      end
+    def ambiguous_width
+      may_req_ambiguous_char_width unless defined? @ambiguous_width
+      @ambiguous_width
     end
 
     private def may_req_ambiguous_char_width
-      @ambiguous_width = 2 if Reline::IOGate == Reline::GeneralIO or STDOUT.is_a?(File)
-      return if ambiguous_width
-      Reline::IOGate.move_cursor_column(0)
-      print "\u{25bd}"
-      @ambiguous_width = Reline::IOGate.cursor_pos.x
-      Reline::IOGate.move_cursor_column(0)
-      Reline::IOGate.erase_after_cursor
+      @ambiguous_width = 1 if io_gate.dumb? || !STDIN.tty? || !STDOUT.tty?
+      return if defined? @ambiguous_width
+      io_gate.move_cursor_column(0)
+      begin
+        output.write "\u{25bd}"
+      rescue Encoding::UndefinedConversionError
+        # LANG=C
+        @ambiguous_width = 1
+      else
+        @ambiguous_width = io_gate.cursor_pos.x == 2 ? 2 : 1
+      end
+      io_gate.move_cursor_column(0)
+      io_gate.erase_after_cursor
     end
   end
 
@@ -347,7 +436,7 @@ module Reline
   #--------------------------------------------------------
 
   (Core::ATTR_READER_NAMES).each { |name|
-    def_single_delegators :core, "#{name}", "#{name}="
+    def_single_delegators :core, :"#{name}", :"#{name}="
   }
   def_single_delegators :core, :input=, :output=
   def_single_delegators :core, :vi_editing_mode, :emacs_editing_mode
@@ -371,8 +460,8 @@ module Reline
   def_single_delegator :line_editor, :byte_pointer, :point
   def_single_delegator :line_editor, :byte_pointer=, :point=
 
-  def self.insert_text(*args, &block)
-    line_editor.insert_text(*args, &block)
+  def self.insert_text(text)
+    line_editor.insert_multiline_text(text)
     self
   end
 
@@ -382,15 +471,22 @@ module Reline
   def_single_delegators :core, :ambiguous_width
   def_single_delegators :core, :last_incremental_search
   def_single_delegators :core, :last_incremental_search=
+  def_single_delegators :core, :add_dialog_proc
+  def_single_delegators :core, :dialog_proc
+  def_single_delegators :core, :autocompletion, :autocompletion=
 
   def_single_delegators :core, :readmultiline
   def_instance_delegators self, :readmultiline
   private :readmultiline
 
+  def self.encoding_system_needs
+    self.core.encoding
+  end
+
   def self.core
     @core ||= Core.new { |core|
       core.config = Reline::Config.new
-      core.key_stroke = Reline::KeyStroke.new(core.config)
+      core.key_stroke = Reline::KeyStroke.new(core.config, core.encoding)
       core.line_editor = Reline::LineEditor.new(core.config)
 
       core.basic_word_break_characters = " \t\n`><=;|&{("
@@ -399,27 +495,25 @@ module Reline
       core.completer_quote_characters = '"\''
       core.filename_quote_characters = ""
       core.special_prefixes = ""
+      core.add_dialog_proc(:autocomplete, Reline::DEFAULT_DIALOG_PROC_AUTOCOMPLETE, Reline::DEFAULT_DIALOG_CONTEXT)
     }
+  end
+
+  def self.ungetc(c)
+    core.io_gate.ungetc(c)
   end
 
   def self.line_editor
     core.line_editor
   end
-
-  HISTORY = History.new(core.config)
 end
 
-if RbConfig::CONFIG['host_os'] =~ /mswin|msys|mingw|cygwin|bccwin|wince|emc/
-  require 'reline/windows'
-  if Reline::Windows.get_screen_size == [0, 0]
-    # Maybe Mintty on Cygwin
-    require 'reline/ansi'
-    Reline::IOGate = Reline::ANSI
-  else
-    Reline::IOGate = Reline::Windows
-  end
-else
-  require 'reline/ansi'
-  Reline::IOGate = Reline::ANSI
-end
-require 'reline/general_io'
+
+Reline::IOGate = Reline::IO.decide_io_gate
+
+# Deprecated
+Reline::GeneralIO = Reline::Dumb.new
+
+Reline::Face.load_initial_configs
+
+Reline::HISTORY = Reline::History.new(Reline.core.config)

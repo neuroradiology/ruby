@@ -1,3 +1,4 @@
+# -*- ruby -*-
 # Configuration file for Ruby >= 2.0 implementations.
 
 class MSpecScript
@@ -45,5 +46,6 @@ class MSpecScript
   set :toplevel_constants_excludes, [
     /\wSpecs?$/,
     /^CS_CONST/,
+    /^CSL_CONST/,
   ]
 end

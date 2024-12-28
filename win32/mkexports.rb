@@ -7,16 +7,13 @@ module RbConfig
 end
 
 class Exports
-  PrivateNames = /(?:Init_|InitVM_|ruby_static_id_|DllMain\b)/
-
-  @@subclass = []
-  def self.inherited(klass)
-    @@subclass << [/#{klass.name.sub(/.*::/, '').downcase}/i, klass]
-  end
+  PrivateNames = /(?:Init_|InitVM_|ruby_static_id_|threadptr|_ec_|DllMain\b)/
 
   def self.create(*args, &block)
     platform = RUBY_PLATFORM
-    pat, klass = @@subclass.find {|p, k| p =~ platform}
+    klass = constants.find do |p|
+      break const_get(p) if platform.include?(p.to_s.downcase)
+    end
     unless klass
       raise ArgumentError, "unsupported platform: #{platform}"
     end
@@ -29,7 +26,7 @@ class Exports
 
   def self.output(output = $output, &block)
     if output
-      open(output, 'wb', &block)
+      File.open(output, 'wb', &block)
     else
       yield STDOUT
     end
@@ -52,7 +49,7 @@ class Exports
   end
 
   def read_substitution(header, syms, winapis)
-    IO.foreach(header) do |line|
+    File.foreach(header) do |line|
       if /^#define (\w+)\((.*?)\)\s+(?:\(void\))?(rb_w32_\w+)\((.*?)\)\s*$/ =~ line and
           $2.delete(" ") == $4.delete(" ")
         export, internal = $1, $3
@@ -109,13 +106,10 @@ class Exports::Mswin < Exports
     objs = objs.collect {|s| s.tr('/', '\\')}
     filetype = nil
     objdump(objs) do |l|
-      if filetype
-        if /^\f/ =~ l
-          filetype = nil
-          next
-        end
+      if (filetype = l[/^File Type: (.+)/, 1])..(/^\f/ =~ l)
         case filetype
         when /OBJECT/, /LIBRARY/
+          l.chomp!
           next if /^[[:xdigit:]]+ 0+ UNDEF / =~ l
           next unless /External/ =~ l
           next if /(?:_local_stdio_printf_options|v(f|sn?)printf(_s)?_l)\Z/ =~ l
@@ -134,8 +128,6 @@ class Exports::Mswin < Exports
           next
         end
         yield l.strip, is_data
-      else
-        filetype = l[/^File Type: (.+)/, 1]
       end
     end
     yield "strcasecmp", "msvcrt.stricmp"
@@ -153,7 +145,7 @@ class Exports::Cygwin < Exports
   end
 
   def each_line(objs, &block)
-    IO.foreach("|#{self.class.nm} --extern --defined #{objs.join(' ')}", &block)
+    IO.foreach("|#{self.class.nm} --extern-only --defined-only #{objs.join(' ')}", &block)
   end
 
   def each_export(objs)
@@ -165,6 +157,9 @@ class Exports::Cygwin < Exports
       yield $2, !$1 if re =~ l
     end
   end
+end
+
+class Exports::Msys < Exports::Cygwin
 end
 
 class Exports::Mingw < Exports::Cygwin

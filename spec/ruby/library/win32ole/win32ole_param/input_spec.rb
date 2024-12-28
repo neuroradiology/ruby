@@ -1,4 +1,7 @@
+require_relative "../../../spec_helper"
 platform_is :windows do
+  verbose, $VERBOSE = $VERBOSE, nil
+
   require 'win32ole'
 
   describe "WIN32OLE_PARAM#input?" do
@@ -13,9 +16,11 @@ platform_is :windows do
     end
 
     it "returns true for 3rd parameter of FileSystemObject's 'CopyFile' method" do
-      @param_overwritefiles.input?.should == true
+      @param_overwritefiles.should.input?
     end
 
   end
 
+ensure
+  $VERBOSE = verbose
 end

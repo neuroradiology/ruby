@@ -121,6 +121,8 @@
 
 module Benchmark
 
+  VERSION = "0.4.0"
+
   BENCHMARK_VERSION = "2002-04-25" # :nodoc:
 
   # Invokes the block with a Benchmark::Report object, which
@@ -128,6 +130,9 @@ module Benchmark
   # benchmark tests. Reserves +label_width+ leading spaces for
   # labels on each line. Prints +caption+ at the top of the
   # report, and uses +format+ to format each line.
+  # (Note: +caption+ must contain a terminating newline character,
+  # see the default Benchmark::Tms::CAPTION for an example.)
+  #
   # Returns an array of Benchmark::Tms objects.
   #
   # If the block returns an array of
@@ -163,20 +168,26 @@ module Benchmark
   #
 
   def benchmark(caption = "", label_width = nil, format = nil, *labels) # :yield: report
-    sync = STDOUT.sync
-    STDOUT.sync = true
+    sync = $stdout.sync
+    $stdout.sync = true
     label_width ||= 0
     label_width += 1
     format ||= FORMAT
-    print ' '*label_width + caption unless caption.empty?
     report = Report.new(label_width, format)
     results = yield(report)
+
+    print " " * report.width + caption unless caption.empty?
+    report.list.each { |i|
+      print i.label.to_s.ljust(report.width)
+      print i.format(report.format, *format)
+    }
+
     Array === results and results.grep(Tms).each {|t|
       print((labels.shift || t.label || "").ljust(label_width), t.format(format))
     }
     report.list
   ensure
-    STDOUT.sync = sync unless sync.nil?
+    $stdout.sync = sync unless sync.nil?
   end
 
 
@@ -247,8 +258,8 @@ module Benchmark
     job = Job.new(width)
     yield(job)
     width = job.width + 1
-    sync = STDOUT.sync
-    STDOUT.sync = true
+    sync = $stdout.sync
+    $stdout.sync = true
 
     # rehearsal
     puts 'Rehearsal '.ljust(width+CAPTION.length,'-')
@@ -268,7 +279,7 @@ module Benchmark
       Benchmark.measure(label, &item).tap { |res| print res }
     }
   ensure
-    STDOUT.sync = sync unless sync.nil?
+    $stdout.sync = sync unless sync.nil?
   end
 
   #
@@ -302,6 +313,10 @@ module Benchmark
 
   #
   # Returns the elapsed real time used to execute the given block.
+  # The unit of time is seconds.
+  #
+  #       Benchmark.realtime { "a" * 1_000_000_000 }
+  #       #=> 0.5098029999935534
   #
   def realtime # :yield:
     r0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -371,16 +386,16 @@ module Benchmark
     # formatting rules.
     #
     def item(label = "", *format, &blk) # :yield:
-      print label.to_s.ljust(@width)
+      w = label.to_s.length
+      @width = w if @width < w
       @list << res = Benchmark.measure(label, &blk)
-      print res.format(@format, *format)
       res
     end
 
     alias report item
 
     # An array of Benchmark::Tms objects representing each item.
-    attr_reader :list
+    attr_reader :width, :format, :list
   end
 
 
@@ -525,6 +540,20 @@ module Benchmark
     #
     def to_a
       [@label, @utime, @stime, @cutime, @cstime, @real]
+    end
+
+    #
+    # Returns a hash containing the same data as `to_a`.
+    #
+    def to_h
+      {
+        label:  @label,
+        utime:  @utime,
+        stime:  @stime,
+        cutime: @cutime,
+        cstime: @cstime,
+        real:   @real
+      }
     end
 
     protected

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 require_relative 'helper'
 
-class TestRDocMarkupToAnsi < RDoc::Markup::TextFormatterTestCase
+class RDocMarkupToAnsiTest < RDoc::Markup::TextFormatterTestCase
 
   add_visitor_tests
   add_text_tests
@@ -348,6 +348,17 @@ words words words words
     assert_equal expected, @to.end_accepting
   end
 
+  def accept_table_align
+    expected = "\e[0m" + <<-EXPECTED
+ AA |BB |CCCCC|DDDDD
+----|---|-----|-----
+    |bbb|    c|
+aaaa|b  |     | dd
+ a  |   |   cc| dd
+    EXPECTED
+    assert_equal expected, @to.end_accepting
+  end
+
   # functional test
   def test_convert_list_note
     note_list = <<-NOTE_LIST
@@ -367,4 +378,3 @@ bar:
   end
 
 end
-

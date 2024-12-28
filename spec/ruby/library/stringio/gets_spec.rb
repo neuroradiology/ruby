@@ -76,12 +76,13 @@ describe "StringIO#gets when passed no argument" do
     @io.gets.should == "this is\n"
 
     begin
-      old_sep, $/ = $/, " "
+      old_sep = $/
+      suppress_warning {$/ = " "}
       @io.gets.should == "an "
       @io.gets.should == "example\nfor "
       @io.gets.should == "StringIO#gets"
     ensure
-      $/ = old_sep
+      suppress_warning {$/ = old_sep}
     end
   end
 
@@ -170,6 +171,10 @@ describe "StringIO#gets when passed [limit]" do
   it "returns a blank string when passed a limit of 0" do
     @io.gets(0).should == ""
   end
+
+  it "ignores it when passed a negative limit" do
+    @io.gets(-4).should == "this>is>an>example"
+  end
 end
 
 describe "StringIO#gets when passed [separator] and [limit]" do
@@ -228,7 +233,7 @@ end
 
 describe "StringIO#gets when in write-only mode" do
   it "raises an IOError" do
-    io = StringIO.new("xyz", "w")
+    io = StringIO.new(+"xyz", "w")
     -> { io.gets }.should raise_error(IOError)
 
     io = StringIO.new("xyz")

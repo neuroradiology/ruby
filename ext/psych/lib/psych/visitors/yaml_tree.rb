@@ -1,7 +1,7 @@
 # frozen_string_literal: true
-require 'psych/tree_builder'
-require 'psych/scalar_scanner'
-require 'psych/class_loader'
+require_relative '../tree_builder'
+require_relative '../scalar_scanner'
+require_relative '../class_loader'
 
 module Psych
   module Visitors
@@ -15,30 +15,25 @@ module Psych
     class YAMLTree < Psych::Visitors::Visitor
       class Registrar # :nodoc:
         def initialize
-          @obj_to_id   = {}
-          @obj_to_node = {}
-          @targets     = []
+          @obj_to_id   = {}.compare_by_identity
+          @obj_to_node = {}.compare_by_identity
           @counter     = 0
         end
 
         def register target, node
-          return unless target.respond_to? :object_id
-          @targets << target
-          @obj_to_node[target.object_id] = node
+          @obj_to_node[target] = node
         end
 
         def key? target
-          @obj_to_node.key? target.object_id
-        rescue NoMethodError
-          false
+          @obj_to_node.key? target
         end
 
         def id_for target
-          @obj_to_id[target.object_id] ||= (@counter += 1)
+          @obj_to_id[target] ||= (@counter += 1)
         end
 
         def node_for target
-          @obj_to_node[target.object_id]
+          @obj_to_node[target]
         end
       end
 
@@ -70,6 +65,7 @@ module Psych
             fail(ArgumentError, "Invalid line_width #{@line_width}, must be non-negative or -1 for unlimited.")
           end
         end
+        @stringify_names = options[:stringify_names]
         @coders     = []
 
         @dispatch_cache = Hash.new do |h,klass|
@@ -80,7 +76,7 @@ module Psych
           raise(TypeError, "Can't dump #{target.class}") unless method
 
           h[klass] = method
-        end
+        end.compare_by_identity
       end
 
       def start encoding = Nodes::Stream::UTF8
@@ -181,7 +177,7 @@ module Psych
       end
 
       def visit_Exception o
-        dump_exception o, private_iv_get(o, 'mesg')
+        dump_exception o, o.message.to_s
       end
 
       def visit_NameError o
@@ -192,12 +188,13 @@ module Psych
         register o, @emitter.scalar(o.inspect, nil, '!ruby/regexp', false, false, Nodes::Scalar::ANY)
       end
 
+      def visit_Date o
+        register o, visit_Integer(o.gregorian)
+      end
+
       def visit_DateTime o
-        formatted = if o.offset.zero?
-                      o.strftime("%Y-%m-%d %H:%M:%S.%9N Z".freeze)
-                    else
-                      o.strftime("%Y-%m-%d %H:%M:%S.%9N %:z".freeze)
-                    end
+        t = o.italy
+        formatted = format_time t, t.offset.zero?
         tag = '!ruby/object:DateTime'
         register o, @emitter.scalar(formatted, nil, tag, false, false, Nodes::Scalar::ANY)
       end
@@ -235,7 +232,6 @@ module Psych
       end
       alias :visit_TrueClass :visit_Integer
       alias :visit_FalseClass :visit_Integer
-      alias :visit_Date :visit_Integer
 
       def visit_Float o
         if o.nan?
@@ -265,18 +261,20 @@ module Psych
           style = Nodes::Scalar::LITERAL
           plain = false
           quote = false
-        elsif o =~ /\n(?!\Z)/  # match \n except blank line at the end of string
+        elsif o.match?(/\n(?!\Z)/)  # match \n except blank line at the end of string
           style = Nodes::Scalar::LITERAL
         elsif o == '<<'
           style = Nodes::Scalar::SINGLE_QUOTED
           tag   = 'tag:yaml.org,2002:str'
           plain = false
           quote = false
+        elsif o == 'y' || o == 'Y' || o == 'n' || o == 'N'
+          style = Nodes::Scalar::DOUBLE_QUOTED
         elsif @line_width && o.length > @line_width
           style = Nodes::Scalar::FOLDED
-        elsif o =~ /^[^[:word:]][^"]*$/
+        elsif o.match?(/^[^[:word:]][^"]*$/)
           style = Nodes::Scalar::DOUBLE_QUOTED
-        elsif not String === @ss.tokenize(o) or /\A0[0-7]*[89]/ =~ o
+        elsif not String === @ss.tokenize(o) or /\A0[0-7]*[89]/.match?(o)
           style = Nodes::Scalar::SINGLE_QUOTED
         end
 
@@ -326,7 +324,7 @@ module Psych
         if o.class == ::Hash
           register(o, @emitter.start_mapping(nil, nil, true, Psych::Nodes::Mapping::BLOCK))
           o.each do |k,v|
-            accept k
+            accept(@stringify_names && Symbol === k ? k.to_s : k)
             accept v
           end
           @emitter.end_mapping
@@ -339,7 +337,7 @@ module Psych
         register(o, @emitter.start_mapping(nil, '!set', false, Psych::Nodes::Mapping::BLOCK))
 
         o.each do |k,v|
-          accept k
+          accept(@stringify_names && Symbol === k ? k.to_s : k)
           accept v
         end
 
@@ -480,8 +478,8 @@ module Psych
         @emitter.end_mapping
       end
 
-      def format_time time
-        if time.utc?
+      def format_time time, utc = time.utc?
+        if utc
           time.strftime("%Y-%m-%d %H:%M:%S.%9N Z")
         else
           time.strftime("%Y-%m-%d %H:%M:%S.%9N %:z")
@@ -509,9 +507,9 @@ module Psych
       def emit_coder c, o
         case c.type
         when :scalar
-          @emitter.scalar c.scalar, nil, c.tag, c.tag.nil?, false, Nodes::Scalar::ANY
+          @emitter.scalar c.scalar, nil, c.tag, c.tag.nil?, false, c.style
         when :seq
-          @emitter.start_sequence nil, c.tag, c.tag.nil?, Nodes::Sequence::BLOCK
+          @emitter.start_sequence nil, c.tag, c.tag.nil?, c.style
           c.seq.each do |thing|
             accept thing
           end
@@ -533,6 +531,52 @@ module Psych
           @emitter.scalar("#{iv.to_s.sub(/^@/, '')}", nil, nil, true, false, Nodes::Scalar::ANY)
           accept target.instance_variable_get(iv)
         end
+      end
+    end
+
+    class RestrictedYAMLTree < YAMLTree
+      DEFAULT_PERMITTED_CLASSES = {
+        TrueClass => true,
+        FalseClass => true,
+        NilClass => true,
+        Integer => true,
+        Float => true,
+        String => true,
+        Array => true,
+        Hash => true,
+      }.compare_by_identity.freeze
+
+      def initialize emitter, ss, options
+        super
+        @permitted_classes = DEFAULT_PERMITTED_CLASSES.dup
+        Array(options[:permitted_classes]).each do |klass|
+          @permitted_classes[klass] = true
+        end
+        @permitted_symbols = {}.compare_by_identity
+        Array(options[:permitted_symbols]).each do |symbol|
+          @permitted_symbols[symbol] = true
+        end
+        @aliases = options.fetch(:aliases, false)
+      end
+
+      def accept target
+        if !@aliases && @st.key?(target)
+          raise BadAlias, "Tried to dump an aliased object"
+        end
+
+        unless Symbol === target || @permitted_classes[target.class]
+          raise DisallowedClass.new('dump', target.class.name || target.class.inspect)
+        end
+
+        super
+      end
+
+      def visit_Symbol sym
+        unless @permitted_classes[Symbol] || @permitted_symbols[sym]
+          raise DisallowedClass.new('dump', "Symbol(#{sym.inspect})")
+        end
+
+        super
       end
     end
   end

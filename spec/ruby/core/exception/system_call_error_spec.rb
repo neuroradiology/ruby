@@ -31,7 +31,7 @@ describe "SystemCallError.new" do
     -> { SystemCallError.new }.should raise_error(ArgumentError)
   end
 
-  it "accepts single Fixnum argument as errno" do
+  it "accepts single Integer argument as errno" do
     SystemCallError.new(-2**24).errno.should == -2**24
     SystemCallError.new(-1).errno.should == -1
     SystemCallError.new(0).errno.should == 0
@@ -51,6 +51,11 @@ describe "SystemCallError.new" do
     e = SystemCallError.new(@example_errno)
     e.should be_kind_of(SystemCallError)
     e.should be_an_instance_of(@example_errno_class)
+  end
+
+  it "sets an error message corresponding to an appropriate Errno class" do
+    e = SystemCallError.new(@example_errno)
+    e.message.should == 'Invalid argument'
   end
 
   it "accepts an optional custom message preceding the errno" do
@@ -79,6 +84,35 @@ describe "SystemCallError.new" do
   it "converts to Integer if errno is a Float" do
     SystemCallError.new('foo', 2.0).should == SystemCallError.new('foo', 2)
     SystemCallError.new('foo', 2.9).should == SystemCallError.new('foo', 2)
+  end
+
+  it "treats nil errno as unknown error value" do
+    SystemCallError.new(nil).should be_an_instance_of(SystemCallError)
+  end
+
+  it "treats nil custom message as if it is not passed at all" do
+    exc = SystemCallError.new(nil, @example_errno)
+    exc.message.should == 'Invalid argument'
+  end
+
+  it "sets an 'unknown error' message when an unknown error number" do
+    platform_is_not :windows do
+      SystemCallError.new(-1).message.should =~ /Unknown error(:)? -1/
+    end
+
+    platform_is :windows do
+      SystemCallError.new(-1).message.should == "The operation completed successfully."
+    end
+  end
+
+  it "adds a custom error message to an 'unknown error' message when an unknown error number and a custom message specified" do
+    platform_is_not :windows do
+      SystemCallError.new("custom message", -1).message.should =~ /Unknown error(:)? -1 - custom message/
+    end
+
+    platform_is :windows do
+      SystemCallError.new("custom message", -1).message.should == "The operation completed successfully. - custom message"
+    end
   end
 
   it "converts to Integer if errno is a Complex convertible to Integer" do
@@ -126,5 +160,18 @@ describe "SystemCallError#message" do
   it "returns the message given as an argument to new" do
     SystemCallError.new("message", 1).message.should =~ /message/
     SystemCallError.new("XXX").message.should =~ /XXX/
+  end
+end
+
+describe "SystemCallError#dup" do
+  it "copies the errno" do
+    dup_sce = SystemCallError.new("message", 42).dup
+    dup_sce.errno.should == 42
+  end
+end
+
+describe "SystemCallError#backtrace" do
+  it "is nil if not raised" do
+    SystemCallError.new("message", 42).backtrace.should == nil
   end
 end

@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 require_relative 'utils'
 
 if defined?(OpenSSL)
@@ -14,7 +14,7 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
       ["keyUsage","keyCertSign, cRLSign",true],
       ["subjectKeyIdentifier","hash",false],
     ]
-    dgst = OpenSSL::Digest::SHA1.new
+    dgst = OpenSSL::Digest.new('SHA256')
     cert = OpenSSL::TestUtils.issue_cert(
       subj, key, s, exts, nil, nil, digest: dgst, not_before: now, not_after: now+3600)
 
@@ -42,7 +42,7 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_equal(OpenSSL::ASN1::Sequence, sig.class)
     assert_equal(2, sig.value.size)
     assert_equal(OpenSSL::ASN1::ObjectId, sig.value[0].class)
-    assert_equal("1.2.840.113549.1.1.5", sig.value[0].oid)
+    assert_equal("1.2.840.113549.1.1.11", sig.value[0].oid)
     assert_equal(OpenSSL::ASN1::Null, sig.value[1].class)
 
     dn = tbs_cert.value[3] # issuer
@@ -167,10 +167,10 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_equal(OpenSSL::ASN1::OctetString, ext.value[2].class)
     extv = OpenSSL::ASN1.decode(ext.value[2].value)
     assert_equal(OpenSSL::ASN1::BitString, extv.class)
-    str = "\000"; str[0] = 0b00000110.chr
+    str = +"\000"; str[0] = 0b00000110.chr
     assert_equal(str, extv.value)
 
-    ext = extensions.value[0].value[2]  # subjetKeyIdentifier
+    ext = extensions.value[0].value[2]  # subjectKeyIdentifier
     assert_equal(OpenSSL::ASN1::Sequence, ext.class)
     assert_equal(2, ext.value.size)
     assert_equal(OpenSSL::ASN1::ObjectId, ext.value[0].class)
@@ -178,7 +178,7 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_equal(OpenSSL::ASN1::OctetString, ext.value[1].class)
     extv = OpenSSL::ASN1.decode(ext.value[1].value)
     assert_equal(OpenSSL::ASN1::OctetString, extv.class)
-    sha1 = OpenSSL::Digest::SHA1.new
+    sha1 = OpenSSL::Digest.new('SHA1')
     sha1.update(pkey.value[1].value)
     assert_equal(sha1.digest, extv.value)
 
@@ -189,7 +189,7 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_equal(OpenSSL::ASN1::Null, pkey.value[0].value[1].class)
 
     assert_equal(OpenSSL::ASN1::BitString, sig_val.class)
-    cululated_sig = key.sign(OpenSSL::Digest::SHA1.new, tbs_cert.to_der)
+    cululated_sig = key.sign(OpenSSL::Digest.new('SHA256'), tbs_cert.to_der)
     assert_equal(cululated_sig, sig_val.value)
   end
 
@@ -265,10 +265,9 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_raise(OpenSSL::ASN1::ASN1Error) {
       OpenSSL::ASN1.decode(B(%w{ 03 00 }))
     }
-    # OpenSSL < OpenSSL_1_0_1k and LibreSSL ignore the error
-    # assert_raise(OpenSSL::ASN1::ASN1Error) {
-    #   OpenSSL::ASN1.decode(B(%w{ 03 03 08 FF 00 }))
-    # }
+    assert_raise(OpenSSL::ASN1::ASN1Error) {
+      OpenSSL::ASN1.decode(B(%w{ 03 03 08 FF 00 }))
+    }
     # OpenSSL does not seem to prohibit this, though X.690 8.6.2.3 (15/08) does
     # assert_raise(OpenSSL::ASN1::ASN1Error) {
     #   OpenSSL::ASN1.decode(B(%w{ 03 01 04 }))
@@ -324,14 +323,42 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_raise(OpenSSL::ASN1::ASN1Error) { OpenSSL::ASN1::ObjectId.new("3.0".b).to_der }
     assert_raise(OpenSSL::ASN1::ASN1Error) { OpenSSL::ASN1::ObjectId.new("0.40".b).to_der }
 
-    begin
-      oid = (0...100).to_a.join(".").b
-      obj = OpenSSL::ASN1::ObjectId.new(oid)
-      assert_equal oid, obj.oid
-    rescue OpenSSL::ASN1::ASN1Error
-      pend "OBJ_obj2txt() not working (LibreSSL?)" if $!.message =~ /OBJ_obj2txt/
-      raise
+    oid = (0...100).to_a.join(".").b
+    obj = OpenSSL::ASN1::ObjectId.new(oid)
+    assert_equal oid, obj.oid
+  end
+
+  def test_object_identifier_equality
+    aki = [
+      OpenSSL::ASN1::ObjectId.new("authorityKeyIdentifier"),
+      OpenSSL::ASN1::ObjectId.new("X509v3 Authority Key Identifier"),
+      OpenSSL::ASN1::ObjectId.new("2.5.29.35")
+    ]
+
+    ski = [
+      OpenSSL::ASN1::ObjectId.new("subjectKeyIdentifier"),
+      OpenSSL::ASN1::ObjectId.new("X509v3 Subject Key Identifier"),
+      OpenSSL::ASN1::ObjectId.new("2.5.29.14")
+    ]
+
+    aki.each do |a|
+      aki.each do |b|
+        assert_equal true, a == b
+      end
+
+      ski.each do |b|
+        assert_equal false, a == b
+      end
     end
+
+    obj1 = OpenSSL::ASN1::ObjectId.new("1.2.34.56789.10")
+    obj2 = OpenSSL::ASN1::ObjectId.new("1.2.34.56789.10")
+    obj3 = OpenSSL::ASN1::ObjectId.new("1.2.34.56789.11")
+    omit "OID 1.2.34.56789.10 is registered" if obj1.sn
+    assert_equal true, obj1 == obj2
+    assert_equal false, obj1 == obj3
+
+    assert_equal false, OpenSSL::ASN1::ObjectId.new("authorityKeyIdentifier") == nil
   end
 
   def test_sequence
@@ -379,9 +406,6 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
   def test_utctime
     encode_decode_test B(%w{ 17 0D }) + "160908234339Z".b,
       OpenSSL::ASN1::UTCTime.new(Time.utc(2016, 9, 8, 23, 43, 39))
-    # Seconds is omitted
-    decode_test B(%w{ 17 0B }) + "1609082343Z".b,
-      OpenSSL::ASN1::UTCTime.new(Time.utc(2016, 9, 8, 23, 43, 0))
     begin
       # possible range of UTCTime is 1969-2068 currently
       encode_decode_test B(%w{ 17 0D }) + "690908234339Z".b,
@@ -407,8 +431,6 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
       OpenSSL::ASN1::GeneralizedTime.new(Time.utc(2016, 12, 8, 19, 34, 29))
     encode_decode_test B(%w{ 18 0F }) + "99990908234339Z".b,
       OpenSSL::ASN1::GeneralizedTime.new(Time.utc(9999, 9, 8, 23, 43, 39))
-    decode_test B(%w{ 18 0D }) + "201612081934Z".b,
-      OpenSSL::ASN1::GeneralizedTime.new(Time.utc(2016, 12, 8, 19, 34, 0))
     # not implemented
     # decode_test B(%w{ 18 13 }) + "20161208193439+0930".b,
     #   OpenSSL::ASN1::GeneralizedTime.new(Time.new(2016, 12, 8, 19, 34, 39, "+09:30"))
@@ -635,10 +657,10 @@ class  OpenSSL::TestASN1 < OpenSSL::TestCase
     assert_equal data, seq.entries
   end
 
-  def test_gc_stress
-    skip "very time consuming test"
-    assert_ruby_status(['--disable-gems', '-eGC.stress=true', '-erequire "openssl.so"'])
-  end
+  # Very time consuming test.
+  # def test_gc_stress
+  #   assert_ruby_status(['--disable-gems', '-eGC.stress=true', '-erequire "openssl.so"'])
+  # end
 
   private
 

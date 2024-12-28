@@ -10,6 +10,10 @@ require 'strscan'
 
 module RDoc::Text
 
+  ##
+  # The language for this text.  This affects stripping comments
+  # markers.
+
   attr_accessor :language
 
   ##
@@ -218,10 +222,10 @@ module RDoc::Text
       when s.scan(/\.\.\.(\.?)/) then
         html << s[1] << encoded[:ellipsis]
         after_word = nil
-      when s.scan(/\(c\)/) then
+      when s.scan(/\(c\)/i) then
         html << encoded[:copyright]
         after_word = nil
-      when s.scan(/\(r\)/) then
+      when s.scan(/\(r\)/i) then
         html << encoded[:trademark]
         after_word = nil
       when s.scan(/---/) then
@@ -237,10 +241,18 @@ module RDoc::Text
       when s.scan(/``/) then # backtick double quote
         html << encoded[:open_dquote]
         after_word = nil
-      when s.scan(/''/) then # tick double quote
+      when s.scan(/(?:&#39;|'){2}/) then # tick double quote
         html << encoded[:close_dquote]
         after_word = nil
-      when s.scan(/'/) then # single quote
+      when s.scan(/`/) then # backtick
+        if insquotes or after_word
+          html << '`'
+          after_word = false
+        else
+          html << encoded[:open_squote]
+          insquotes = true
+        end
+      when s.scan(/&#39;|'/) then # single quote
         if insquotes
           html << encoded[:close_squote]
           insquotes = false
@@ -300,5 +312,11 @@ module RDoc::Text
 
     res.join.strip
   end
+
+  ##
+  # Character class to be separated by a space when concatenating
+  # lines.
+
+  SPACE_SEPARATED_LETTER_CLASS = /[\p{Nd}\p{Lc}\p{Pc}]|[!-~&&\W]/
 
 end

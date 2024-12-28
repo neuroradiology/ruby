@@ -8,12 +8,17 @@ require 'rbconfig'
 OBJDIR ||= File.expand_path("../../../ext/#{RUBY_ENGINE}/#{RUBY_VERSION}", __FILE__)
 
 def object_path
-  mkdir_p(OBJDIR)
-  OBJDIR
+  path = OBJDIR
+  if ENV['SPEC_CAPI_CXX'] == 'true'
+    path = "#{path}/cxx"
+  end
+  mkdir_p(path)
+  path
 end
 
 def compile_extension(name)
   debug = false
+  cxx = ENV['SPEC_CAPI_CXX'] == 'true'
   run_mkmf_in_process = RUBY_ENGINE == 'truffleruby'
 
   core_ext_dir = File.expand_path("../ext", __FILE__)
@@ -24,14 +29,14 @@ def compile_extension(name)
 
   ext = "#{name}_spec"
   lib = "#{object_path}/#{ext}.#{RbConfig::CONFIG['DLEXT']}"
-  ruby_header = "#{RbConfig::CONFIG['rubyhdrdir']}/ruby.h"
+  rubyhdrdir = RbConfig::CONFIG['rubyhdrdir']
+  ruby_header = "#{rubyhdrdir}/ruby.h"
+  abi_header = "#{rubyhdrdir}/ruby/internal/abi.h"
 
   if RbConfig::CONFIG["ENABLE_SHARED"] == "yes"
-    if PlatformGuard.windows?
-      libruby_so = "#{RbConfig::CONFIG['bindir']}/#{RbConfig::CONFIG['LIBRUBY_SO']}"
-    else
-      libruby_so = "#{RbConfig::CONFIG['libdir']}/#{RbConfig::CONFIG['LIBRUBY_SO']}"
-    end
+    # below is defined since 2.1, except for mswin, and maybe other platforms
+    libdirname = RbConfig::CONFIG.fetch 'libdirname', 'libdir'
+    libruby = "#{RbConfig::CONFIG[libdirname]}/#{RbConfig::CONFIG['LIBRUBY']}"
   end
 
   begin
@@ -43,7 +48,8 @@ def compile_extension(name)
     when mtime <= File.mtime("#{core_ext_dir}/rubyspec.h")
     when mtime <= File.mtime("#{spec_ext_dir}/#{ext}.c")
     when mtime <= File.mtime(ruby_header)
-    when libruby_so && mtime <= File.mtime(libruby_so)
+    when (mtime <= File.mtime(abi_header) rescue nil)
+    when libruby && mtime <= File.mtime(libruby)
     else
       return lib # up-to-date
     end
@@ -54,7 +60,11 @@ def compile_extension(name)
   Dir.mkdir(tmpdir)
   begin
     ["#{core_ext_dir}/rubyspec.h", "#{spec_ext_dir}/#{ext}.c"].each do |file|
-      cp file, "#{tmpdir}/#{File.basename(file)}"
+      if cxx and file.end_with?('.c')
+        cp file, "#{tmpdir}/#{File.basename(file, '.c')}.cpp"
+      else
+        cp file, "#{tmpdir}/#{File.basename(file)}"
+      end
     end
 
     Dir.chdir(tmpdir) do
@@ -64,11 +74,14 @@ def compile_extension(name)
         init_mkmf unless required
         create_makefile(ext, tmpdir)
       else
-        File.write("extconf.rb", "require 'mkmf'\n" +
-          "$ruby = ENV.values_at('RUBY_EXE', 'RUBY_FLAGS').join(' ')\n" +
+        File.write("extconf.rb", <<-RUBY)
+          require 'mkmf'
+          $ruby = ENV.values_at('RUBY_EXE', 'RUBY_FLAGS').join(' ')
           # MRI magic to consider building non-bundled extensions
-          "$extout = nil\n" +
-          "create_makefile(#{ext.inspect})\n")
+          $extout = nil
+          append_cflags '-Wno-declaration-after-statement'
+          create_makefile(#{ext.inspect})
+        RUBY
         output = ruby_exe("extconf.rb")
         raise "extconf failed:\n#{output}" unless $?.success?
         $stderr.puts output if debug
@@ -116,7 +129,9 @@ def setup_make
 end
 
 def load_extension(name)
-  require compile_extension(name)
+  ext_path = compile_extension(name)
+  require ext_path
+  ext_path
 rescue LoadError => e
   if %r{/usr/sbin/execerror ruby "\(ld 3 1 main ([/a-zA-Z0-9_\-.]+_spec\.so)"} =~ e.message
     system('/usr/sbin/execerror', "#{RbConfig::CONFIG["bindir"]}/ruby", "(ld 3 1 main #{$1}")

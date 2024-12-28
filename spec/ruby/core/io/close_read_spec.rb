@@ -4,7 +4,8 @@ require_relative 'fixtures/classes'
 describe "IO#close_read" do
 
   before :each do
-    @io = IO.popen 'cat', "r+"
+    cmd = platform_is(:windows) ? 'rem' : 'cat'
+    @io = IO.popen cmd, "r+"
     @path = tmp('io.close.txt')
   end
 
@@ -49,7 +50,7 @@ describe "IO#close_read" do
 
     io.close_read
 
-    io.closed?.should == true
+    io.should.closed?
   end
 
   it "does nothing on closed stream" do

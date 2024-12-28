@@ -2,6 +2,8 @@
 
 require_relative 'helper'
 
+return if ENV['RDOC_USE_PRISM_PARSER']
+
 class TestRDocParserRuby < RDoc::TestCase
 
   def setup
@@ -921,7 +923,7 @@ end
       @parser.parse_class @top_level, RDoc::Parser::Ruby::NORMAL, tk, @comment
     end
     err = stds[1]
-    assert_match(/Expected class name or '<<'\. Got/, err)
+    assert_match(/Expected class name or '<<\'\. Got/, err)
   end
 
   def test_parse_syntax_error_code
@@ -1960,10 +1962,10 @@ end
   def test_parse_method_bracket
     util_parser <<-RUBY
 class C
-  def [] end
-  def self.[] end
-  def []= end
-  def self.[]= end
+  def []; end
+  def self.[]; end
+  def []=; end
+  def self.[]=; end
 end
     RUBY
 
@@ -3065,6 +3067,28 @@ RUBY
     assert_nil m.params, 'Module parameter not removed'
   end
 
+  def test_parse_statements_nodoc_identifier_alias
+    klass = @top_level.add_class RDoc::NormalClass, 'Foo'
+
+    util_parser "\nalias :old :new # :nodoc:"
+
+    @parser.parse_statements klass, RDoc::Parser::Ruby::NORMAL, nil
+
+    assert_empty klass.aliases
+    assert_empty klass.unmatched_alias_lists
+  end
+
+  def test_parse_statements_nodoc_identifier_alias_method
+    klass = @top_level.add_class RDoc::NormalClass, 'Foo'
+
+    util_parser "\nalias_method :old :new # :nodoc:"
+
+    @parser.parse_statements klass, RDoc::Parser::Ruby::NORMAL, nil
+
+    assert_empty klass.aliases
+    assert_empty klass.unmatched_alias_lists
+  end
+
   def test_parse_statements_stopdoc_alias
     klass = @top_level.add_class RDoc::NormalClass, 'Foo'
 
@@ -3203,6 +3227,14 @@ RUBY
     @parser.skip_tkspace
 
     assert_nil @parser.parse_symbol_in_arg
+  end
+
+  def test_parse_percent_symbol
+    content = '%s[foo bar]'
+    util_parser content
+    tk = @parser.get_tk
+    assert_equal :on_symbol, tk[:kind]
+    assert_equal content, tk[:text]
   end
 
   def test_parse_statements_alias_method
@@ -3348,6 +3380,13 @@ end
     assert_equal 'test', value
 
     assert_equal :on_const, parser.get_tk[:kind]
+  end
+
+  def test_read_directive_linear_performance
+    pre = ->(i) {util_parser '# ' + '0'*i + '=000:'}
+    assert_linear_performance((1..5).map{|i|10**i}, pre: pre) do |parser|
+      assert_nil parser.read_directive []
+    end
   end
 
   def test_read_documentation_modifiers
@@ -4297,4 +4336,65 @@ end
     assert_equal 'A::D', a_d.full_name
   end
 
+  def test_parse_included
+    util_parser <<-CLASS
+module A
+  module B
+    extend ActiveSupport::Concern
+    included do
+      ##
+      # :singleton-method:
+      # Hello
+      mattr_accessor :foo
+    end
+  end
+end
+    CLASS
+
+    @parser.scan
+
+    a = @store.find_module_named 'A'
+    assert_equal 'A', a.full_name
+    a_b = a.find_module_named 'B'
+    assert_equal 'A::B', a_b.full_name
+    meth = a_b.method_list.first
+    assert_equal 'foo', meth.name
+    assert_equal 'Hello', meth.comment.text
+  end
+
+  def test_end_that_doesnt_belong_to_class_doesnt_change_visibility
+    util_parser <<-CLASS
+class A
+  private
+
+  begin
+  end
+
+  # Hello
+  def foo() end
+end
+    CLASS
+
+    @parser.scan
+
+    a = @store.find_class_named 'A'
+    assert_equal 'A', a.full_name
+    assert_equal 'foo', a.find_method_named('foo').name
+    meth = a.method_list.first
+    assert_equal 'Hello', meth.comment.text
+  end
+
+  def test_parenthesized_cdecl
+    util_parser <<-RUBY
+module DidYouMean
+  class << (NameErrorCheckers = Object.new)
+  end
+end
+    RUBY
+
+    @parser.scan
+
+    refute_predicate @store.find_class_or_module('DidYouMean'), :nil?
+    refute_predicate @store.find_class_or_module('DidYouMean::NameErrorCheckers'), :nil?
+  end
 end

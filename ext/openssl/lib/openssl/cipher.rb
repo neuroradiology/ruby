@@ -1,4 +1,4 @@
-# frozen_string_literal: false
+# frozen_string_literal: true
 #--
 # = Ruby-space predefined Cipher subclasses
 #
@@ -9,7 +9,7 @@
 #
 # = Licence
 # This program is licensed under the same licence as Ruby.
-# (See the file 'LICENCE'.)
+# (See the file 'COPYING'.)
 #++
 
 module OpenSSL

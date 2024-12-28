@@ -6,14 +6,14 @@ describe :kernel_system, shared: true do
     -> { @object.system("echo a") }.should output_to_fd("a\n")
 
     $?.should be_an_instance_of Process::Status
-    $?.success?.should == true
+    $?.should.success?
   end
 
   it "returns true when the command exits with a zero exit status" do
     @object.system(ruby_cmd('exit 0')).should == true
 
     $?.should be_an_instance_of Process::Status
-    $?.success?.should == true
+    $?.should.success?
     $?.exitstatus.should == 0
   end
 
@@ -21,18 +21,16 @@ describe :kernel_system, shared: true do
     @object.system(ruby_cmd('exit 1')).should == false
 
     $?.should be_an_instance_of Process::Status
-    $?.success?.should == false
+    $?.should_not.success?
     $?.exitstatus.should == 1
   end
 
-  ruby_version_is "2.6" do
-    it "raises RuntimeError when `exception: true` is given and the command exits with a non-zero exit status" do
-      -> { @object.system(ruby_cmd('exit 1'), exception: true) }.should raise_error(RuntimeError)
-    end
+  it "raises RuntimeError when `exception: true` is given and the command exits with a non-zero exit status" do
+    -> { @object.system(ruby_cmd('exit 1'), exception: true) }.should raise_error(RuntimeError)
+  end
 
-    it "raises Errno::ENOENT when `exception: true` is given and the specified command does not exist" do
-      -> { @object.system('feature_14386', exception: true) }.should raise_error(Errno::ENOENT)
-    end
+  it "raises Errno::ENOENT when `exception: true` is given and the specified command does not exist" do
+    -> { @object.system('feature_14386', exception: true) }.should raise_error(Errno::ENOENT)
   end
 
   it "returns nil when command execution fails" do
@@ -40,7 +38,7 @@ describe :kernel_system, shared: true do
 
     $?.should be_an_instance_of Process::Status
     $?.pid.should be_kind_of(Integer)
-    $?.exitstatus.should == 127
+    $?.should_not.success?
   end
 
   it "does not write to stderr when command execution fails" do
@@ -63,6 +61,23 @@ describe :kernel_system, shared: true do
     it "ignores SHELL env var and always uses `sh`" do
       ENV['SHELL'] = "/bin/fakeshell"
       -> { @object.system("echo $0") }.should output_to_fd("sh\n")
+    end
+  end
+
+  platform_is_not :windows do
+    before :each do
+      require 'tmpdir'
+      @shell_command = File.join(Dir.mktmpdir, "noshebang.cmd")
+      File.write(@shell_command, %[echo "$PATH"\n], perm: 0o700)
+    end
+
+    after :each do
+      File.unlink(@shell_command)
+      Dir.rmdir(File.dirname(@shell_command))
+    end
+
+    it "executes with `sh` if the command is executable but not binary and there is no shebang" do
+      -> { @object.system(@shell_command) }.should output_to_fd(ENV['PATH'] + "\n")
     end
   end
 

@@ -5,7 +5,7 @@
  */
 /*
  * This program is licensed under the same licence as Ruby.
- * (See the file 'LICENCE'.)
+ * (See the file 'COPYING'.)
  */
 #include "ossl.h"
 
@@ -27,8 +27,8 @@
 /*
  * Classes
  */
-VALUE cX509CRL;
-VALUE eX509CRLError;
+static VALUE cX509CRL;
+static VALUE eX509CRLError;
 
 static void
 ossl_x509crl_free(void *ptr)
@@ -41,7 +41,7 @@ static const rb_data_type_t ossl_x509crl_type = {
     {
 	0, ossl_x509crl_free,
     },
-    0, 0, RUBY_TYPED_FREE_IMMEDIATELY,
+    0, 0, RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
 };
 
 /*
@@ -93,23 +93,26 @@ static VALUE
 ossl_x509crl_initialize(int argc, VALUE *argv, VALUE self)
 {
     BIO *in;
-    X509_CRL *crl, *x = DATA_PTR(self);
+    X509_CRL *crl, *crl_orig = RTYPEDDATA_DATA(self);
     VALUE arg;
 
+    rb_check_frozen(self);
     if (rb_scan_args(argc, argv, "01", &arg) == 0) {
 	return self;
     }
     arg = ossl_to_der_if_possible(arg);
     in = ossl_obj2bio(&arg);
-    crl = PEM_read_bio_X509_CRL(in, &x, NULL, NULL);
-    DATA_PTR(self) = x;
+    crl = d2i_X509_CRL_bio(in, NULL);
     if (!crl) {
-	OSSL_BIO_reset(in);
-	crl = d2i_X509_CRL_bio(in, &x);
-	DATA_PTR(self) = x;
+        OSSL_BIO_reset(in);
+        crl = PEM_read_bio_X509_CRL(in, NULL, NULL, NULL);
     }
     BIO_free(in);
-    if (!crl) ossl_raise(eX509CRLError, NULL);
+    if (!crl)
+        ossl_raise(eX509CRLError, "PEM_read_bio_X509_CRL");
+
+    RTYPEDDATA_DATA(self) = crl;
+    X509_CRL_free(crl_orig);
 
     return self;
 }
@@ -347,7 +350,11 @@ ossl_x509crl_sign(VALUE self, VALUE key, VALUE digest)
 
     GetX509CRL(self, crl);
     pkey = GetPrivPKeyPtr(key); /* NO NEED TO DUP */
-    md = ossl_evp_get_digestbyname(digest);
+    if (NIL_P(digest)) {
+	md = NULL; /* needed for some key types, e.g. Ed25519 */
+    } else {
+	md = ossl_evp_get_digestbyname(digest);
+    }
     if (!X509_CRL_sign(crl, pkey, md)) {
 	ossl_raise(eX509CRLError, NULL);
     }
@@ -471,12 +478,12 @@ ossl_x509crl_set_extensions(VALUE self, VALUE ary)
 	OSSL_Check_Kind(RARRAY_AREF(ary, i), cX509Ext);
     }
     GetX509CRL(self, crl);
-    while ((ext = X509_CRL_delete_ext(crl, 0)))
-	X509_EXTENSION_free(ext);
+    for (i = X509_CRL_get_ext_count(crl); i > 0; i--)
+        X509_EXTENSION_free(X509_CRL_delete_ext(crl, 0));
     for (i=0; i<RARRAY_LEN(ary); i++) {
 	ext = GetX509ExtPtr(RARRAY_AREF(ary, i)); /* NO NEED TO DUP */
 	if (!X509_CRL_add_ext(crl, ext, -1)) {
-	    ossl_raise(eX509CRLError, NULL);
+	    ossl_raise(eX509CRLError, "X509_CRL_add_ext");
 	}
     }
 
